@@ -1,0 +1,7 @@
+__pycache__/
+.DS_Store
+archive/
+# Of each run, only final.pt (final weights and training summary) is tracked. Logs, intermediate checkpoints and
+# probe results stay local.
+runs/*/*/*
+!runs/*/*/final.pt
