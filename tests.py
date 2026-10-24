@@ -1,10 +1,10 @@
 """Self-contained checks of the process, the training targets, the model, and the probe.
 
-Run from the repository root with `python tests.py` (about 10 seconds). The process and its Bayesian
+Run from the repository root with `python tests.py` (about half a minute). The process and its Bayesian
 quantities are compared with a brute-force reference that enumerates hidden-state paths and is written independently
 of mrrxor.py. The model is checked for causality and for the features it returns. The probe is checked for the
-alignment of activations with beliefs, its train/test split, its weighting, and its controls. The last test runs
-train.py, probe.py and summarize.py end to end on a tiny model.
+alignment of activations with beliefs, its two splits, its weighting, its ridge fit, and its controls. The last test
+runs train.py, probe.py and summarize.py end to end on a tiny model.
 """
 import itertools
 import json
@@ -236,14 +236,17 @@ class Model(unittest.TestCase):
 
 class BeliefModel(torch.nn.Module):
     """Stand-in for the transformer whose features at position n are the exact belief after tokens[:, :n + 1 + lag]
-    (zero-padded to the transformer's width). With lag = 0 the probe must give R^2 = 1; lag = -1 is an off-by-one."""
+    (zero-padded to the transformer's width). With lag = 0 the probe must give R^2 = 1; lag = -1 is an off-by-one.
+    blank = "odd" or "even" zeroes the features at odd or even history lengths."""
 
-    def __init__(self, T: torch.Tensor, lag: int):
+    def __init__(self, T: torch.Tensor, lag: int = 0, blank: str | None = None):
         super().__init__()
-        self.T, self.lag, self.cfg = T, lag, Config()
+        self.T, self.lag, self.blank, self.cfg = T, lag, blank, Config()
 
     def forward(self, tokens: torch.Tensor, features: bool = False):
         b = mrrxor.beliefs(self.T, tokens)[:, 1 + self.lag: tokens.shape[1] + 1 + self.lag].float()
+        if self.blank:
+            b[:, (0 if self.blank == "odd" else 1)::2] = 0  # index 0 is history length 1
         padded = torch.cat([b, torch.zeros(*b.shape[:2], (self.cfg.n_layers + 1) * self.cfg.d_model - 5)], -1)
         return torch.zeros(*tokens.shape, 2), padded
 
@@ -267,6 +270,19 @@ class Probe(unittest.TestCase):
         expected = 1 - ((noisy - prediction) ** 2).sum() / ((noisy - noisy.mean(0)) ** 2).sum()
         self.assertAlmostEqual(probe.weighted_r2(noisy, prediction, ones), float(expected), places=12)
         self.assertLess(probe.weighted_r2(noisy, torch.zeros_like(noisy) + noisy.mean(0), ones), 1e-12)
+
+    def test_ridge_path(self):
+        """The smallest penalty reproduces least squares; larger penalties shrink the predictions toward the mean."""
+        generator = torch.Generator().manual_seed(9)
+        x = torch.randn(500, 10, generator=generator, dtype=torch.float64)
+        w = torch.rand(500, generator=generator, dtype=torch.float64)
+        y = x @ torch.randn(10, 3, generator=generator, dtype=torch.float64) + torch.randn(500, 3, generator=generator,
+                                                                                           dtype=torch.float64)
+        predictors = probe.ridge_path(x, y, w)
+        torch.testing.assert_close(predictors[0](x), probe.weighted_fit(x, y, w)(x), rtol=0, atol=1e-6)
+        spread = [float(p(x).std(0).sum()) for p in predictors]
+        self.assertTrue(all(a >= b for a, b in zip(spread, spread[1:])))
+        self.assertLess(spread[-1], 0.5 * spread[0])
 
     def test_uniform_weighting(self):
         """eps > 0: uniformly random strings. eps = 0: process samples weighted by 1 / probability, which makes every
@@ -307,8 +323,20 @@ class Probe(unittest.TestCase):
             self.assertAlmostEqual(exact[f"next_r2_{weighting}"], 1.0, places=5)
             self.assertLess(exact[f"shuffled_r2_{weighting}"], 0.5)
             self.assertTrue(all(r > 1 - 1e-5 for r in exact[f"r2_by_position_{weighting}"]))
+            self.assertGreater(exact[f"parity_r2_{weighting}"], 0.999)
+            self.assertGreater(exact[f"parity_next_r2_{weighting}"], 0.999)
+            self.assertLess(exact[f"parity_shuffled_r2_{weighting}"], 0.1)  # no history is shared across parities
         lagged = probe.probe(BeliefModel(T, lag=-1), T, count=2048)
         self.assertLess(lagged["r2_uniform"], 0.9)
+
+    def test_parity_split_fits_odd_and_scores_even_positions(self):
+        """Without belief information at the odd (fitting) or the even (scoring) history lengths, the odd/even probe
+        cannot recover the belief, while the random-split probe still can from the other half."""
+        T = mrrxor.transition_tensor(0.05)
+        for blank in ("odd", "even"):
+            result = probe.probe(BeliefModel(T, blank=blank), T, count=2048)
+            self.assertLess(result["parity_r2_uniform"], 0.1, blank)
+            self.assertGreater(result["r2_uniform"], 0.3, blank)
 
     def test_scripts_end_to_end(self):
         """train.py, probe.py (final and all checkpoints) and summarize.py on a tiny model for 30 steps."""
@@ -329,14 +357,19 @@ class Probe(unittest.TestCase):
                                          checkpoint], check=True, capture_output=True, cwd=ROOT)
             result = json.loads((run / "probe.json").read_text())
             self.assertEqual(result["layers"], 1)
-            for key in ("r2", "next_r2", "shuffled_r2", "init_r2"):
+            for key in ("r2", "next_r2", "shuffled_r2", "init_r2", "parity_r2", "parity_next_r2",
+                        "parity_shuffled_r2", "init_parity_r2"):
                 for weighting in ("uniform", "process"):
                     self.assertTrue(np.isfinite(result[f"{key}_{weighting}"]), key)
             self.assertEqual(len(list(run.glob("probe_step_*.json"))), 3)
             summary = subprocess.run(python + [str(ROOT / "summarize.py")], check=True, capture_output=True,
                                      text=True, cwd=tmp).stdout
-            self.assertIn("### 1 layers, d_model 16", summary)
-            self.assertIn("Did not reach the training-KL target: ε = 0.05 (1 of 1 seeds).", summary)
+            for heading in ("### Random split", "### Odd/even split"):
+                self.assertIn(heading, summary)
+            self.assertIn("| 1 layers, d_model 16 | 0.05 | **", summary)
+            self.assertIn("| 1 layers, d_model 16, untrained | 0.05 | ", summary)
+            self.assertIn("Did not reach the training-KL target: 1 layers, d_model 16, ε = 0.05 (1 of 1 seeds).",
+                          summary)
 
 
 if __name__ == "__main__":

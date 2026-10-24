@@ -3,11 +3,19 @@
 As in Shai et al. (2024), one linear probe is shared by all positions. We draw trajectories of length 32 (the
 model's context), run the model on each, and take the activations at every position: the LayerNorm-ed input of each
 block and the LayerNorm-ed output of the last block ((n_layers + 1) x d_model features, 5 x 64 = 320 by default).
-The target at position n is the exact belief state after the first n tokens. The trajectories are split 80/20. An
-affine least-squares probe is fitted on all positions of the training trajectories and scored on all positions of the
-test trajectories:
+The target at position n is the exact belief state after the first n tokens. The trajectories are split 80/20, and
+the probe is scored with
 R^2 = 1 - weighted sum of squared errors / weighted sum of squared deviations from the weighted mean, pooled over
-the five belief coordinates (and, in probe.json, also reported for each position separately).
+the target's coordinates. Two splits of the rows:
+  random split    an affine least-squares probe fitted on all positions of the training trajectories and scored on
+                  all positions of the test trajectories (in probe.json also for each position separately)
+  odd/even split  (keys prefixed parity_) fitted on the odd positions (history lengths 1, 3, ..., 31) of the training
+                  trajectories and scored on the even positions of the test trajectories, so that no history is
+                  shared and the probe must carry over to positions it has not seen. Least squares extrapolates badly
+                  to unseen positions, so this probe is a ridge regression. Its penalty is alpha times the mean
+                  eigenvalue of the weighted feature covariance, with alpha chosen from ALPHAS separately for each
+                  target, by leave-one-group-out cross-validation over four groups of odd positions ({1, 9, 17, 25},
+                  {3, 11, 19, 27}, ...) of the training trajectories (keys parity_*alpha_*).
 
 Histories are weighted in two ways, through the trajectory sample (used for both fitting and scoring):
   process  trajectories sampled from the process
@@ -17,7 +25,7 @@ Histories are weighted in two ways, through the trajectory sample (used for both
 Every trajectory contributes one row per position, so all positions carry equal total weight. Short prefixes recur
 across trajectories, so at the first few positions most test rows coincide with training rows.
 
-Two controls use the same features and split (one least-squares solve fits all targets):
+Two controls use the same features and splits (one solve fits all targets):
   next_      the Bayes-optimal next-token distribution, which the network is trained to output
   shuffled_  the belief states with the distinct beliefs randomly permuted among themselves: histories that share a
              belief still share a target, but the targets no longer reflect the geometry of the beliefs. This measures
@@ -80,13 +88,32 @@ def weighted_fit(x: torch.Tensor, y: torch.Tensor, w: torch.Tensor):
     return lambda x_new: (x_new - x_mean) @ coef + y_mean
 
 
+ALPHAS = torch.logspace(-8, 1, 19, dtype=torch.float64)
+
+
+def ridge_path(x: torch.Tensor, y: torch.Tensor, w: torch.Tensor) -> list:
+    """Weighted ridge regressions with an unpenalized intercept, one predictor per alpha in ALPHAS. The penalty is
+    alpha times the mean eigenvalue of the weighted feature covariance."""
+    w = w / w.sum()
+    x_mean, y_mean = w @ x, w @ y
+    root = w.sqrt()[:, None]
+    xc = root * (x - x_mean)
+    values, vectors = torch.linalg.eigh(xc.T @ xc)
+    values = values.clamp_min(0)
+    scale = values.mean().clamp_min(torch.finfo(values.dtype).tiny)  # constant features get zero coefficients
+    projected = vectors.T @ (xc.T @ (root * (y - y_mean)))
+    coefs = [vectors @ (projected / (values + alpha * scale)[:, None]) for alpha in ALPHAS]
+    return [lambda x_new, coef=coef: (x_new - x_mean) @ coef + y_mean for coef in coefs]
+
+
 def weighted_r2(y: torch.Tensor, prediction: torch.Tensor, w: torch.Tensor) -> float:
     w = w / w.sum()
     return float(1 - (w @ ((y - prediction) ** 2).sum(1)) / (w @ ((y - w @ y) ** 2).sum(1)))
 
 
 def probe(model: Transformer, T: torch.Tensor, count: int = 8192, test_fraction: float = 0.2, seed: int = 0) -> dict:
-    """Pooled held-out R^2, overall and by position, for both weightings, of the belief state and the two controls."""
+    """Pooled held-out R^2 for both weightings and both splits (by position too, for the random split), of the
+    belief state and the two controls."""
     out = {}
     context = model.cfg.context
     for weighting in ("uniform", "process"):
@@ -108,6 +135,25 @@ def probe(model: Transformer, T: torch.Tensor, count: int = 8192, test_fraction:
                                                          row_weights[test].flatten())
             out[f"{prefix}r2_by_position_{weighting}"] = [
                 weighted_r2(target[test][:, n], prediction[:, n], row_weights[test][:, n]) for n in range(context)]
+
+        # odd/even split: ridge penalty per target by leave-one-group-out over odd positions of training trajectories
+        position = torch.arange(context)
+        odd, group = position % 2 == 0, (position // 2) % 4  # index 0 is history length 1
+        train, evaluate = ~test[:, None] & odd, test[:, None] & ~odd
+        sizes = [t.shape[-1] for t in targets.values()]
+        cv = torch.zeros(len(targets), len(ALPHAS))
+        for g in range(4):
+            fit_rows, val_rows = train & (group != g), train & (group == g)
+            for k, predict in enumerate(ridge_path(features[fit_rows], stacked[fit_rows], row_weights[fit_rows])):
+                for j, (target, prediction) in enumerate(zip(targets.values(),
+                                                             predict(features[val_rows]).split(sizes, -1))):
+                    cv[j, k] += weighted_r2(target[val_rows], prediction, row_weights[val_rows]) / 4
+        predictors = ridge_path(features[train], stacked[train], row_weights[train])
+        for j, (prefix, target) in enumerate(targets.items()):
+            k = int(cv[j].argmax())
+            prediction = predictors[k](features[evaluate]).split(sizes, -1)[j]
+            out[f"parity_{prefix}r2_{weighting}"] = weighted_r2(target[evaluate], prediction, row_weights[evaluate])
+            out[f"parity_{prefix}alpha_{weighting}"] = float(ALPHAS[k])
     return out
 
 
