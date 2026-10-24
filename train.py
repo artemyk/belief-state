@@ -27,6 +27,7 @@ parser.add_argument("--init-std", type=float, default=0.1,
                     help="std of the normal initialization of all weights")
 parser.add_argument("--layers", type=int, default=4)
 parser.add_argument("--d-model", type=int, default=64, help="residual-stream width; the MLPs have width 4 d_model")
+parser.add_argument("--rope", action="store_true", help="rotary position embeddings instead of learned ones")
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--eps", type=float, default=0.05, help="MRRXOR mixing probability")
 parser.add_argument("--context", type=int, default=32)
@@ -45,7 +46,7 @@ device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if 
 data_rng = torch.Generator().manual_seed(args.seed)
 T = mrrxor.transition_tensor(args.eps)
 
-cfg = Config(context=args.context, n_layers=args.layers, d_model=args.d_model, d_mlp=4 * args.d_model)
+cfg = Config(context=args.context, n_layers=args.layers, d_model=args.d_model, d_mlp=4 * args.d_model, rope=args.rope)
 model = untrained(cfg, args.init_std, args.seed).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [

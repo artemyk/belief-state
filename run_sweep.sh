@@ -6,7 +6,7 @@ PYTHON=${PYTHON:-python}
 LAYERS=${1:-4}
 D_MODEL=${2:-64}
 OUT=runs/L${LAYERS}_d${D_MODEL}
-for eps in 0.05 0.01 0; do
+for eps in 0.05 0; do
   mkdir -p $OUT/eps${eps}
   for seed in 0 1 2 3 4; do
     RUN=$OUT/eps${eps}/s${seed}

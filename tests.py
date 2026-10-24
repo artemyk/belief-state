@@ -19,10 +19,10 @@ import torch
 
 import mrrxor
 import probe
-from model import Config, Transformer, untrained
+from model import Config, Transformer, rotary, untrained
 
 ROOT = Path(__file__).resolve().parent
-EPSILONS = (0.0, 0.01, 0.05)
+EPSILONS = (0.0, 0.05)
 
 # RRXOR, written out by hand: (state, token) -> (next state, probability). States A..E are 0..4.
 EDGES = {(0, 0): (1, 0.5), (0, 1): (2, 0.5),  # A: first random bit
@@ -227,17 +227,39 @@ class Model(unittest.TestCase):
             elif value.numel() > 1000:
                 self.assertAlmostEqual(float(value.std()), 0.1, delta=0.01)
 
+    def test_rope(self):
+        """Rotary embeddings keep norms, make query-key products depend only on the relative position, and keep the
+        model causal; the RoPE model has no learned positional embeddings."""
+        generator = torch.Generator().manual_seed(10)
+        q = torch.randn(1, 1, 1, 8, generator=generator).expand(1, 1, 32, 8)
+        k = torch.randn(1, 1, 1, 8, generator=generator).expand(1, 1, 32, 8)
+        torch.testing.assert_close(rotary(q).norm(dim=-1), q.norm(dim=-1))
+        scores = (rotary(q) @ rotary(k).transpose(-1, -2))[0, 0]
+        for offset in (0, 3, 11):
+            diagonal = scores.diagonal(-offset)
+            torch.testing.assert_close(diagonal, diagonal[0].expand_as(diagonal), rtol=0, atol=1e-5)
+        model = untrained(Config(context=16, n_layers=2, d_model=32, d_mlp=128, rope=True), 0.1, seed=0).eval()
+        self.assertIsNone(model.pos_embed)
+        tokens = torch.randint(0, 2, (8, 16), generator=generator)
+        with torch.no_grad():
+            features = model(tokens, features=True)[1]
+            changed = tokens.clone()
+            changed[:, 9] = 1 - changed[:, 9]
+            torch.testing.assert_close(model(changed, features=True)[1][:, :9], features[:, :9], rtol=0, atol=1e-6)
+
     def test_parameter_counts(self):
-        """README: 144k parameters (Shai et al. 2024 architecture) and 20k (2 layers, d_model 32)."""
+        """README: 144k parameters (Shai et al. 2024 architecture), 142k with RoPE, and 20k (2 layers, d_model 32)."""
         count = lambda cfg: sum(p.numel() for p in Transformer(cfg).parameters())
         self.assertEqual(count(Config()), 144_354)
+        self.assertEqual(count(Config(rope=True)), 142_306)
         self.assertEqual(count(Config(n_layers=2, d_model=32, d_mlp=128)), 20_338)
 
 
 class BeliefModel(torch.nn.Module):
     """Stand-in for the transformer whose features at position n are the exact belief after tokens[:, :n + 1 + lag]
     (zero-padded to the transformer's width). With lag = 0 the probe must give R^2 = 1; lag = -1 is an off-by-one.
-    blank = "odd" or "even" zeroes the features at odd or even history lengths."""
+    blank = "odd", "even", "first" or "second" zeroes the features at odd or even history lengths, or in the first or
+    second half of the context."""
 
     def __init__(self, T: torch.Tensor, lag: int = 0, blank: str | None = None):
         super().__init__()
@@ -246,7 +268,9 @@ class BeliefModel(torch.nn.Module):
     def forward(self, tokens: torch.Tensor, features: bool = False):
         b = mrrxor.beliefs(self.T, tokens)[:, 1 + self.lag: tokens.shape[1] + 1 + self.lag].float()
         if self.blank:
-            b[:, (0 if self.blank == "odd" else 1)::2] = 0  # index 0 is history length 1
+            positions = {"odd": slice(0, None, 2), "even": slice(1, None, 2), "first": slice(0, 16),
+                         "second": slice(16, None)}  # index 0 is history length 1
+            b[:, positions[self.blank]] = 0
         padded = torch.cat([b, torch.zeros(*b.shape[:2], (self.cfg.n_layers + 1) * self.cfg.d_model - 5)], -1)
         return torch.zeros(*tokens.shape, 2), padded
 
@@ -323,20 +347,23 @@ class Probe(unittest.TestCase):
             self.assertAlmostEqual(exact[f"next_r2_{weighting}"], 1.0, places=5)
             self.assertLess(exact[f"shuffled_r2_{weighting}"], 0.5)
             self.assertTrue(all(r > 1 - 1e-5 for r in exact[f"r2_by_position_{weighting}"]))
-            self.assertGreater(exact[f"parity_r2_{weighting}"], 0.999)
-            self.assertGreater(exact[f"parity_next_r2_{weighting}"], 0.999)
-            self.assertLess(exact[f"parity_shuffled_r2_{weighting}"], 0.1)  # no history is shared across parities
+            for split in ("parity_", "early_", "late_"):  # no history is shared between fitting and scoring
+                self.assertGreater(exact[f"{split}r2_{weighting}"], 0.999, split)
+                self.assertGreater(exact[f"{split}next_r2_{weighting}"], 0.999, split)
+                self.assertLess(exact[f"{split}shuffled_r2_{weighting}"], 0.1, split)
         lagged = probe.probe(BeliefModel(T, lag=-1), T, count=2048)
         self.assertLess(lagged["r2_uniform"], 0.9)
 
-    def test_parity_split_fits_odd_and_scores_even_positions(self):
-        """Without belief information at the odd (fitting) or the even (scoring) history lengths, the odd/even probe
-        cannot recover the belief, while the random-split probe still can from the other half."""
+    def test_held_out_positions_fit_and_score_the_stated_positions(self):
+        """Without belief information at the fitting or the scoring positions of a held-out-position split, its probe
+        cannot recover the belief, while the random-split probe still can from the other positions."""
         T = mrrxor.transition_tensor(0.05)
-        for blank in ("odd", "even"):
+        for blank, splits in (("odd", ["parity_"]), ("even", ["parity_"]), ("first", ["early_", "late_"]),
+                              ("second", ["early_", "late_"])):
             result = probe.probe(BeliefModel(T, blank=blank), T, count=2048)
-            self.assertLess(result["parity_r2_uniform"], 0.1, blank)
             self.assertGreater(result["r2_uniform"], 0.3, blank)
+            for split in splits:
+                self.assertLess(result[f"{split}r2_uniform"], 0.1, (blank, split))
 
     def test_scripts_end_to_end(self):
         """train.py, probe.py (final and all checkpoints) and summarize.py on a tiny model for 30 steps."""

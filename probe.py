@@ -9,13 +9,17 @@ R^2 = 1 - weighted sum of squared errors / weighted sum of squared deviations fr
 the target's coordinates. Two splits of the rows:
   random split    an affine least-squares probe fitted on all positions of the training trajectories and scored on
                   all positions of the test trajectories (in the results also for each position separately)
-  odd/even split  (keys prefixed parity_) fitted on the odd positions (history lengths 1, 3, ..., 31) of the training
-                  trajectories and scored on the even positions of the test trajectories, so that no history is
-                  shared and the probe must carry over to positions it has not seen. Least squares extrapolates badly
-                  to unseen positions, so this probe is a ridge regression. Its penalty is alpha times the mean
-                  eigenvalue of the weighted feature covariance, with alpha chosen from ALPHAS separately for each
-                  target, by leave-one-group-out cross-validation over four groups of odd positions ({1, 9, 17, 25},
-                  {3, 11, 19, 27}, ...) of the training trajectories (keys parity_*alpha_*).
+  held-out positions  fitted on some positions of the training trajectories and scored on the other positions of
+                  the test trajectories, so that no history is shared and the probe must carry over to positions it
+                  has not seen:
+                    parity_  fitted on the odd positions (history lengths 1, 3, ..., 31), scored on the even ones
+                    early_   fitted on the first half (lengths 1-16), scored on the second half (17-32)
+                    late_    fitted on the second half, scored on the first half
+                  Least squares extrapolates badly to unseen positions, so these probes are ridge regressions. The
+                  penalty is alpha times the mean eigenvalue of the weighted feature covariance, with alpha chosen
+                  from ALPHAS separately for each target, by leave-one-group-out cross-validation over four groups of
+                  fitting positions of the training trajectories: {1, 9, 17, 25}, {3, 11, 19, 27}, ... for parity_,
+                  and four contiguous blocks of four positions for the halves (keys <split>*alpha_*).
 
 Histories are weighted in two ways, through the trajectory sample (used for both fitting and scoring):
   process  trajectories sampled from the process
@@ -137,24 +141,38 @@ def probe(model: Transformer, T: torch.Tensor, count: int = 8192, test_fraction:
             out[f"{prefix}r2_by_position_{weighting}"] = [
                 weighted_r2(target[test][:, n], prediction[:, n], row_weights[test][:, n]) for n in range(context)]
 
-        # odd/even split: ridge penalty per target by leave-one-group-out over odd positions of training trajectories
-        position = torch.arange(context)
-        odd, group = position % 2 == 0, (position // 2) % 4  # index 0 is history length 1
-        train, evaluate = ~test[:, None] & odd, test[:, None] & ~odd
-        sizes = [t.shape[-1] for t in targets.values()]
-        cv = torch.zeros(len(targets), len(ALPHAS))
-        for g in range(4):
-            fit_rows, val_rows = train & (group != g), train & (group == g)
-            for k, predict in enumerate(ridge_path(features[fit_rows], stacked[fit_rows], row_weights[fit_rows])):
-                for j, (target, prediction) in enumerate(zip(targets.values(),
-                                                             predict(features[val_rows]).split(sizes, -1))):
-                    cv[j, k] += weighted_r2(target[val_rows], prediction, row_weights[val_rows]) / 4
-        predictors = ridge_path(features[train], stacked[train], row_weights[train])
-        for j, (prefix, target) in enumerate(targets.items()):
-            k = int(cv[j].argmax())
-            prediction = predictors[k](features[evaluate]).split(sizes, -1)[j]
-            out[f"parity_{prefix}r2_{weighting}"] = weighted_r2(target[evaluate], prediction, row_weights[evaluate])
-            out[f"parity_{prefix}alpha_{weighting}"] = float(ALPHAS[k])
+        position = torch.arange(context)  # index 0 is history length 1
+        first_half, block = position < context // 2, position % (context // 2) // (context // 8)
+        held_out = {"parity_": (position % 2 == 0, (position // 2) % 4), "early_": (first_half, block),
+                    "late_": (~first_half, block)}
+        for split_name, (fit_positions, groups) in held_out.items():
+            for (prefix, _), (r2, alpha) in zip(targets.items(), held_out_positions(
+                    features, targets, row_weights, test, fit_positions, groups)):
+                out[f"{split_name}{prefix}r2_{weighting}"] = r2
+                out[f"{split_name}{prefix}alpha_{weighting}"] = alpha
+    return out
+
+
+def held_out_positions(features: torch.Tensor, targets: dict, row_weights: torch.Tensor, test: torch.Tensor,
+                       fit_positions: torch.Tensor, groups: torch.Tensor) -> list[tuple[float, float]]:
+    """(R^2, alpha) per target of the ridge probe fitted on fit_positions of the training trajectories and scored on
+    the other positions of the test trajectories. alpha is chosen per target by leave-one-group-out cross-validation
+    over the four groups (groups: the group 0-3 of each position) of fitting positions of the training trajectories."""
+    stacked, sizes = torch.cat(list(targets.values()), -1), [t.shape[-1] for t in targets.values()]
+    train, evaluate = ~test[:, None] & fit_positions, test[:, None] & ~fit_positions
+    cv = torch.zeros(len(targets), len(ALPHAS))
+    for g in range(4):
+        fit_rows, val_rows = train & (groups != g), train & (groups == g)
+        for k, predict in enumerate(ridge_path(features[fit_rows], stacked[fit_rows], row_weights[fit_rows])):
+            predictions = predict(features[val_rows]).split(sizes, -1)
+            for j, (target, prediction) in enumerate(zip(targets.values(), predictions)):
+                cv[j, k] += weighted_r2(target[val_rows], prediction, row_weights[val_rows]) / 4
+    predictors = ridge_path(features[train], stacked[train], row_weights[train])
+    out = []
+    for j, target in enumerate(targets.values()):
+        k = int(cv[j].argmax())
+        prediction = predictors[k](features[evaluate]).split(sizes, -1)[j]
+        out.append((weighted_r2(target[evaluate], prediction, row_weights[evaluate]), float(ALPHAS[k])))
     return out
 
 
@@ -200,9 +218,9 @@ def main() -> None:
         test_tokens, test_optimal = mrrxor.test_set(T, model.cfg.context)
         with torch.no_grad():
             test_kl = mrrxor.kl_to_model(test_optimal, model(test_tokens))
-        result = {"layers": model.cfg.n_layers, "d_model": model.cfg.d_model, "eps": float(meta["eps"]),
-                  "init_std": float(meta["init_std"]), "seed": int(meta["seed"]), "steps": checkpoint["step"],
-                  "test_kl": test_kl, **probe(model, T, **settings)}
+        result = {"layers": model.cfg.n_layers, "d_model": model.cfg.d_model, "rope": model.cfg.rope,
+                  "eps": float(meta["eps"]), "init_std": float(meta["init_std"]), "seed": int(meta["seed"]),
+                  "steps": checkpoint["step"], "test_kl": test_kl, **probe(model, T, **settings)}
         if name == "final":
             result.update(train_kl=checkpoint["train_kl"], reached_target=checkpoint["reached_target"])
             initial = untrained(model.cfg, float(meta["init_std"]), int(meta["seed"])).eval()

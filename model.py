@@ -1,5 +1,7 @@
 """The transformer of Shai et al. (2024), Appendix A.6. By default: 4 layers, d_model 64, one attention head of
-dimension 8, ReLU MLPs of width 256, pre-LayerNorm, learned positional embeddings, causal attention, no dropout."""
+dimension 8, ReLU MLPs of width 256, pre-LayerNorm, learned positional embeddings, causal attention, no dropout.
+With rope=True, rotary position embeddings (Su et al. 2021) on the queries and keys replace the learned positional
+embeddings."""
 from dataclasses import dataclass
 
 import torch
@@ -16,12 +18,24 @@ class Config:
     n_heads: int = 1
     d_head: int = 8
     d_mlp: int = 256
+    rope: bool = False
+
+
+def rotary(x: torch.Tensor, base: float = 10_000.0) -> torch.Tensor:
+    """Rotary position embedding of queries or keys (batch, heads, length, d_head): the two halves of each vector are
+    rotated as pairs of coordinates by angles position * base^(-i / (d_head / 2)), i = 0, ..., d_head / 2 - 1."""
+    half = x.shape[-1] // 2
+    frequencies = base ** (-torch.arange(half, device=x.device, dtype=torch.float32) / half)
+    angles = torch.arange(x.shape[-2], device=x.device, dtype=torch.float32)[:, None] * frequencies
+    cos, sin = angles.cos().to(x.dtype), angles.sin().to(x.dtype)
+    x1, x2 = x[..., :half], x[..., half:]
+    return torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], -1)
 
 
 class Block(nn.Module):
     def __init__(self, cfg: Config):
         super().__init__()
-        self.n_heads, self.d_head = cfg.n_heads, cfg.d_head
+        self.n_heads, self.d_head, self.rope = cfg.n_heads, cfg.d_head, cfg.rope
         self.ln1 = nn.LayerNorm(cfg.d_model)
         self.qkv = nn.Linear(cfg.d_model, 3 * cfg.n_heads * cfg.d_head)
         self.out = nn.Linear(cfg.n_heads * cfg.d_head, cfg.d_model)
@@ -33,6 +47,8 @@ class Block(nn.Module):
         normalized = self.ln1(x)
         batch, length, _ = x.shape
         q, k, v = self.qkv(normalized).view(batch, length, 3, self.n_heads, self.d_head).permute(2, 0, 3, 1, 4)
+        if self.rope:
+            q, k = rotary(q), rotary(k)
         attention = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         x = x + self.out(attention.transpose(1, 2).reshape(batch, length, -1))
         x = x + self.mlp(self.ln2(x))
@@ -44,7 +60,7 @@ class Transformer(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.embed = nn.Embedding(cfg.vocab, cfg.d_model)
-        self.pos_embed = nn.Embedding(cfg.context, cfg.d_model)
+        self.pos_embed = None if cfg.rope else nn.Embedding(cfg.context, cfg.d_model)
         self.blocks = nn.ModuleList(Block(cfg) for _ in range(cfg.n_layers))
         self.ln_final = nn.LayerNorm(cfg.d_model)
         self.unembed = nn.Linear(cfg.d_model, cfg.vocab)
@@ -59,7 +75,9 @@ class Transformer(nn.Module):
         (batch, length, (n_layers + 1) d_model): the residual stream at every layer as the network reads it, i.e.
         the LayerNorm-ed input of each block and the LayerNorm-ed output of the last block (the input to the
         unembedding)."""
-        x = self.embed(tokens) + self.pos_embed(torch.arange(tokens.shape[1], device=tokens.device))
+        x = self.embed(tokens)
+        if self.pos_embed is not None:
+            x = x + self.pos_embed(torch.arange(tokens.shape[1], device=tokens.device))
         normalized = []
         for block in self.blocks:
             x, block_input = block(x)
