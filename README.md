@@ -6,7 +6,7 @@ A small, self-contained PyTorch implementation of a transformer trained on the M
 
 ## Results
 
-We evaluate three models: a *large* one with the architecture of Shai et al. (2024), 4 layers and d_model 64, and a *small* one with 2 layers and d_model 32, each trained with 5 seeds for ε = 0.05 and 0; and the large one with rotary position embeddings (*RoPE*) instead of learned ones, trained with 5 seeds for ε = 0.05. All large-model runs, and the small-model runs with ε = 0, reached training KL 1e-4; the small-model runs with ε = 0.05 stopped at 100,000 steps, at training KL 4.8e-4 to 7.5e-4. The RoPE runs trained more slowly and stopped at 100,000 steps, at training KL 9.1e-4 to 9.6e-4.
+We evaluate four models: a *large* one with the architecture of Shai et al. (2024), 4 layers and d_model 64, and a *small* one with 2 layers and d_model 32, each trained with 5 seeds for ε = 0.05 and 0; and both with rotary position embeddings (*RoPE*) instead of learned ones, trained with 5 seeds for ε = 0.05 (large) and for ε = 0.05 and 0 (small). All runs with learned embeddings reached training KL 1e-4, except the small-model runs with ε = 0.05, which stopped at 100,000 steps, at training KL 4.8e-4 to 7.5e-4. The RoPE runs trained more slowly and stopped at 100,000 steps, at training KL 9.1e-4 to 9.6e-4 (large), 2.7e-3 to 3.6e-3 (small, ε = 0.05), and 4.5e-3 to 8.9e-3 (small, ε = 0).
 
 Each entry is the held-out R² of a linear probe from the residual stream, as mean ± standard deviation over the 5 seeds. The main number, in bold, is for the belief state: the posterior over the five hidden states given the history. Three controls use the same features, fit, and held-out rows:
 
@@ -25,21 +25,25 @@ The probe is fitted on all positions of 80% of the trajectories and scored on al
 | model | ε | belief state | next-token distribution | shuffled belief state | untrained network |
 |---|---:|---:|---:|---:|---:|
 | large | 0.05 | **0.93 ± 0.01** | 1.00 ± 0.00 | 0.11 ± 0.01 | 0.24 ± 0.01 |
-| large | 0 | **0.81 ± 0.03** | 1.00 ± 0.00 | 0.84 ± 0.01 | 0.12 ± 0.01 |
+| large | 0 | **0.80 ± 0.03** | 1.00 ± 0.00 | 0.84 ± 0.01 | 0.12 ± 0.01 |
 | large, RoPE | 0.05 | **0.97 ± 0.00** | 0.98 ± 0.00 | 0.08 ± 0.01 | 0.30 ± 0.01 |
 | small | 0.05 | **0.73 ± 0.03** | 0.98 ± 0.00 | 0.06 ± 0.01 | 0.20 ± 0.00 |
 | small | 0 | **0.60 ± 0.02** | 0.96 ± 0.00 | 0.65 ± 0.01 | 0.10 ± 0.00 |
+| small, RoPE | 0.05 | **0.76 ± 0.05** | 0.96 ± 0.00 | 0.03 ± 0.00 | 0.24 ± 0.01 |
+| small, RoPE | 0 | **0.61 ± 0.06** | 0.89 ± 0.02 | 0.49 ± 0.05 | 0.14 ± 0.01 |
 
 <details>
 <summary>Process weighting</summary>
 
 | model | ε | belief state | next-token distribution | shuffled belief state | untrained network |
 |---|---:|---:|---:|---:|---:|
-| large | 0.05 | **0.92 ± 0.01** | 1.00 ± 0.00 | 0.12 ± 0.01 | 0.20 ± 0.01 |
-| large | 0 | **0.81 ± 0.03** | 1.00 ± 0.00 | 0.84 ± 0.01 | 0.12 ± 0.01 |
-| large, RoPE | 0.05 | **0.96 ± 0.01** | 0.99 ± 0.00 | 0.10 ± 0.01 | 0.26 ± 0.01 |
-| small | 0.05 | **0.69 ± 0.04** | 0.99 ± 0.00 | 0.07 ± 0.01 | 0.16 ± 0.00 |
+| large | 0.05 | **0.93 ± 0.01** | 1.00 ± 0.00 | 0.12 ± 0.01 | 0.19 ± 0.01 |
+| large | 0 | **0.80 ± 0.03** | 1.00 ± 0.00 | 0.84 ± 0.01 | 0.12 ± 0.01 |
+| large, RoPE | 0.05 | **0.96 ± 0.01** | 0.99 ± 0.00 | 0.10 ± 0.01 | 0.25 ± 0.01 |
+| small | 0.05 | **0.70 ± 0.04** | 0.99 ± 0.00 | 0.07 ± 0.00 | 0.16 ± 0.00 |
 | small | 0 | **0.60 ± 0.02** | 0.96 ± 0.00 | 0.65 ± 0.01 | 0.10 ± 0.00 |
+| small, RoPE | 0.05 | **0.70 ± 0.04** | 0.96 ± 0.00 | 0.04 ± 0.00 | 0.20 ± 0.01 |
+| small, RoPE | 0 | **0.61 ± 0.06** | 0.89 ± 0.02 | 0.49 ± 0.05 | 0.14 ± 0.01 |
 
 </details>
 
@@ -54,21 +58,25 @@ The probe is fitted on the odd positions (history lengths 1, 3, …, 31) of the 
 | model | ε | belief state | next-token distribution | shuffled belief state | untrained network |
 |---|---:|---:|---:|---:|---:|
 | large | 0.05 | **0.85 ± 0.03** | 0.99 ± 0.00 | -0.01 ± 0.00 | 0.16 ± 0.00 |
-| large | 0 | **0.67 ± 0.01** | 0.99 ± 0.01 | 0.59 ± 0.01 | 0.08 ± 0.00 |
+| large | 0 | **0.67 ± 0.01** | 0.99 ± 0.00 | 0.59 ± 0.01 | 0.08 ± 0.00 |
 | large, RoPE | 0.05 | **0.95 ± 0.01** | 0.97 ± 0.00 | -0.01 ± 0.00 | 0.24 ± 0.02 |
 | small | 0.05 | **0.63 ± 0.04** | 0.98 ± 0.00 | 0.00 ± 0.00 | 0.16 ± 0.00 |
-| small | 0 | **0.56 ± 0.05** | 0.95 ± 0.00 | 0.49 ± 0.02 | 0.08 ± 0.00 |
+| small | 0 | **0.55 ± 0.05** | 0.95 ± 0.00 | 0.49 ± 0.02 | 0.08 ± 0.00 |
+| small, RoPE | 0.05 | **0.73 ± 0.06** | 0.95 ± 0.00 | 0.00 ± 0.00 | 0.21 ± 0.01 |
+| small, RoPE | 0 | **0.58 ± 0.06** | 0.87 ± 0.02 | 0.37 ± 0.07 | 0.11 ± 0.01 |
 
 <details>
 <summary>Process weighting</summary>
 
 | model | ε | belief state | next-token distribution | shuffled belief state | untrained network |
 |---|---:|---:|---:|---:|---:|
-| large | 0.05 | **0.83 ± 0.03** | 1.00 ± 0.00 | -0.01 ± 0.00 | 0.14 ± 0.00 |
-| large | 0 | **0.67 ± 0.01** | 0.99 ± 0.01 | 0.58 ± 0.01 | 0.08 ± 0.00 |
-| large, RoPE | 0.05 | **0.95 ± 0.01** | 0.98 ± 0.00 | 0.00 ± 0.00 | 0.20 ± 0.01 |
-| small | 0.05 | **0.58 ± 0.04** | 0.99 ± 0.00 | 0.00 ± 0.00 | 0.14 ± 0.00 |
-| small | 0 | **0.56 ± 0.05** | 0.95 ± 0.01 | 0.49 ± 0.02 | 0.08 ± 0.00 |
+| large | 0.05 | **0.83 ± 0.04** | 1.00 ± 0.00 | -0.02 ± 0.01 | 0.14 ± 0.00 |
+| large | 0 | **0.67 ± 0.01** | 0.99 ± 0.00 | 0.59 ± 0.01 | 0.08 ± 0.00 |
+| large, RoPE | 0.05 | **0.95 ± 0.01** | 0.98 ± 0.00 | -0.01 ± 0.00 | 0.19 ± 0.01 |
+| small | 0.05 | **0.58 ± 0.04** | 0.99 ± 0.00 | -0.01 ± 0.00 | 0.14 ± 0.00 |
+| small | 0 | **0.55 ± 0.05** | 0.95 ± 0.00 | 0.49 ± 0.02 | 0.08 ± 0.00 |
+| small, RoPE | 0.05 | **0.67 ± 0.04** | 0.96 ± 0.00 | -0.01 ± 0.00 | 0.18 ± 0.01 |
+| small, RoPE | 0 | **0.58 ± 0.06** | 0.87 ± 0.02 | 0.37 ± 0.07 | 0.11 ± 0.01 |
 
 </details>
 
@@ -85,10 +93,12 @@ Fitted on history lengths 1–16, scored on lengths 17–32:
 | model | ε | belief state | next-token distribution | shuffled belief state | untrained network |
 |---|---:|---:|---:|---:|---:|
 | large | 0.05 | **0.75 ± 0.06** | 0.99 ± 0.00 | -0.01 ± 0.00 | 0.15 ± 0.01 |
-| large | 0 | **0.60 ± 0.03** | 0.99 ± 0.00 | 0.47 ± 0.13 | 0.07 ± 0.00 |
+| large | 0 | **0.60 ± 0.03** | 0.99 ± 0.00 | 0.44 ± 0.21 | 0.07 ± 0.00 |
 | large, RoPE | 0.05 | **0.96 ± 0.01** | 0.99 ± 0.00 | -0.01 ± 0.00 | 0.17 ± 0.01 |
 | small | 0.05 | **0.54 ± 0.01** | 0.97 ± 0.00 | -0.01 ± 0.00 | 0.14 ± 0.01 |
-| small | 0 | **0.49 ± 0.06** | 0.97 ± 0.00 | 0.52 ± 0.03 | 0.07 ± 0.00 |
+| small | 0 | **0.49 ± 0.06** | 0.97 ± 0.00 | 0.53 ± 0.03 | 0.07 ± 0.00 |
+| small, RoPE | 0.05 | **0.70 ± 0.09** | 0.97 ± 0.00 | -0.01 ± 0.00 | 0.16 ± 0.01 |
+| small, RoPE | 0 | **0.42 ± 0.05** | 0.88 ± 0.03 | 0.25 ± 0.08 | 0.07 ± 0.00 |
 
 <details>
 <summary>Process weighting</summary>
@@ -96,10 +106,12 @@ Fitted on history lengths 1–16, scored on lengths 17–32:
 | model | ε | belief state | next-token distribution | shuffled belief state | untrained network |
 |---|---:|---:|---:|---:|---:|
 | large | 0.05 | **0.70 ± 0.06** | 0.99 ± 0.00 | -0.01 ± 0.00 | 0.12 ± 0.00 |
-| large | 0 | **0.60 ± 0.03** | 0.99 ± 0.00 | 0.47 ± 0.13 | 0.07 ± 0.00 |
+| large | 0 | **0.60 ± 0.03** | 0.99 ± 0.00 | 0.44 ± 0.21 | 0.07 ± 0.00 |
 | large, RoPE | 0.05 | **0.94 ± 0.01** | 0.99 ± 0.00 | -0.01 ± 0.00 | 0.13 ± 0.00 |
-| small | 0.05 | **0.48 ± 0.02** | 0.98 ± 0.00 | -0.01 ± 0.00 | 0.12 ± 0.01 |
-| small | 0 | **0.49 ± 0.06** | 0.97 ± 0.00 | 0.52 ± 0.03 | 0.07 ± 0.00 |
+| small | 0.05 | **0.48 ± 0.02** | 0.99 ± 0.00 | 0.00 ± 0.00 | 0.12 ± 0.01 |
+| small | 0 | **0.49 ± 0.06** | 0.97 ± 0.00 | 0.53 ± 0.03 | 0.07 ± 0.00 |
+| small, RoPE | 0.05 | **0.59 ± 0.08** | 0.96 ± 0.00 | -0.01 ± 0.00 | 0.13 ± 0.01 |
+| small, RoPE | 0 | **0.42 ± 0.05** | 0.88 ± 0.03 | 0.25 ± 0.08 | 0.07 ± 0.00 |
 
 </details>
 
@@ -112,21 +124,25 @@ Fitted on history lengths 17–32, scored on lengths 1–16:
 | model | ε | belief state | next-token distribution | shuffled belief state | untrained network |
 |---|---:|---:|---:|---:|---:|
 | large | 0.05 | **0.16 ± 0.57** | 0.99 ± 0.00 | 0.00 ± 0.00 | 0.18 ± 0.00 |
-| large | 0 | **0.43 ± 0.12** | 0.94 ± 0.03 | 0.21 ± 0.09 | 0.11 ± 0.00 |
+| large | 0 | **0.43 ± 0.13** | 0.94 ± 0.03 | 0.21 ± 0.09 | 0.11 ± 0.00 |
 | large, RoPE | 0.05 | **0.91 ± 0.04** | 0.97 ± 0.00 | 0.00 ± 0.00 | -1.12 ± 1.79 |
 | small | 0.05 | **0.24 ± 0.48** | 0.98 ± 0.00 | 0.00 ± 0.00 | 0.17 ± 0.00 |
-| small | 0 | **0.27 ± 0.22** | 0.86 ± 0.00 | -0.02 ± 0.07 | 0.10 ± 0.00 |
+| small | 0 | **0.26 ± 0.19** | 0.86 ± 0.00 | -0.02 ± 0.07 | 0.10 ± 0.00 |
+| small, RoPE | 0.05 | **0.71 ± 0.08** | 0.95 ± 0.00 | 0.00 ± 0.00 | 0.02 ± 0.19 |
+| small, RoPE | 0 | **-0.05 ± 0.50** | 0.75 ± 0.14 | -0.53 ± 0.61 | -18.33 ± 38.41 |
 
 <details>
 <summary>Process weighting</summary>
 
 | model | ε | belief state | next-token distribution | shuffled belief state | untrained network |
 |---|---:|---:|---:|---:|---:|
-| large | 0.05 | **0.25 ± 0.35** | 0.99 ± 0.00 | -0.01 ± 0.00 | 0.17 ± 0.00 |
-| large | 0 | **0.43 ± 0.12** | 0.94 ± 0.03 | 0.22 ± 0.09 | 0.11 ± 0.00 |
-| large, RoPE | 0.05 | **0.85 ± 0.08** | 0.98 ± 0.00 | -0.01 ± 0.00 | -6.54 ± 14.09 |
-| small | 0.05 | **0.19 ± 0.37** | 0.99 ± 0.00 | -0.01 ± 0.00 | 0.16 ± 0.00 |
-| small | 0 | **0.27 ± 0.22** | 0.86 ± 0.00 | -0.02 ± 0.07 | 0.10 ± 0.00 |
+| large | 0.05 | **0.23 ± 0.35** | 0.99 ± 0.00 | -0.01 ± 0.00 | 0.17 ± 0.00 |
+| large | 0 | **0.43 ± 0.13** | 0.94 ± 0.03 | 0.22 ± 0.09 | 0.11 ± 0.00 |
+| large, RoPE | 0.05 | **0.85 ± 0.07** | 0.97 ± 0.00 | -0.01 ± 0.00 | -5.76 ± 11.43 |
+| small | 0.05 | **0.20 ± 0.37** | 0.98 ± 0.00 | -0.01 ± 0.00 | 0.16 ± 0.00 |
+| small | 0 | **0.26 ± 0.19** | 0.86 ± 0.00 | -0.02 ± 0.06 | 0.10 ± 0.00 |
+| small, RoPE | 0.05 | **0.65 ± 0.05** | 0.96 ± 0.00 | -0.01 ± 0.00 | -3.80 ± 5.67 |
+| small, RoPE | 0 | **-0.05 ± 0.50** | 0.75 ± 0.14 | -0.53 ± 0.61 | -18.42 ± 38.62 |
 
 </details>
 
@@ -138,7 +154,7 @@ Fitted on history lengths 17–32, scored on lengths 1–16:
 
 **Why mixing.** With ε > 0, every binary sequence has positive probability, so a probe can be weighted uniformly over all histories. Without mixing, most sequences are impossible (any violated XOR), and the belief takes only 36 distinct values, including the initial one. With mixing, the beliefs form a rich, fractal set that a probe has to resolve. We run ε = 0.05, and ε = 0 for comparison with Shai et al. (2024).
 
-**Models.** The large model is that of Shai et al. (2024), Appendix A.6: 4 layers, d_model 64, one attention head of dimension 8, ReLU MLPs of width 256, pre-LayerNorm, learned positional embeddings, causal attention, and no dropout (144k parameters). The small model has 2 layers, d_model 32, MLP width 128, and the same attention head (20k parameters). The RoPE model is the large one with rotary position embeddings (Su et al., 2021) on the queries and keys in place of the learned positional embeddings (142k parameters). Every weight matrix and embedding is drawn from N(0, σ²) with σ = 0.1; biases start at 0, and LayerNorm at gain 1 and bias 0.
+**Models.** The large model is that of Shai et al. (2024), Appendix A.6: 4 layers, d_model 64, one attention head of dimension 8, ReLU MLPs of width 256, pre-LayerNorm, learned positional embeddings, causal attention, and no dropout (144k parameters). The small model has 2 layers, d_model 32, MLP width 128, and the same attention head (20k parameters). The RoPE models are the large and small ones with rotary position embeddings (Su et al., 2021) on the queries and keys in place of the learned positional embeddings (142k and 19k parameters). Every weight matrix and embedding is drawn from N(0, σ²) with σ = 0.1; biases start at 0, and LayerNorm at gain 1 and bias 0.
 
 **Context length 32.** Longer than the length-10 contexts of Shai et al. (2024), so there are many more distinct histories (2^32 sequences for ε > 0). The probe's training and test trajectories can then be numerous and disjoint.
 
@@ -155,10 +171,10 @@ Fitted on history lengths 17–32, scored on lengths 1–16:
 | `train.py` | Training until the model's predictions are within a target KL of Bayes-optimal |
 | `probe.py` | The held-out probes (random and odd/even splits) and their controls, and the test KL |
 | `summarize.py` | Collects the probe results into the tables in `results.md` |
-| `run_sweep.sh` | Trains and probes ε = 0.05 and 0 with 5 seeds each, for one model size |
+| `run_sweep.sh` | Trains and probes ε = 0.05 and 0 with 5 seeds each, for one model size and kind of position embedding |
 | `tests.py` | Self-contained checks of the process, the model, the probe and the scripts |
 
-The repository keeps one file per run, `runs/L<layers>_d<d_model>/eps<ε>/s<seed>.pt`: the final weights and the training summary (steps, training and test KL). The untrained network is regenerated from the seed. The run's log (`.log`), probe results (`.json`) and a checkpoint every 5,000 steps (in a directory of the same name) stay local.
+The repository keeps one file per run, `runs/L<layers>_d<d_model>[_rope]/eps<ε>/s<seed>.pt`: the final weights and the training summary (steps, training and test KL). The untrained network is regenerated from the seed. The run's log (`.log`), probe results (`.json`) and a checkpoint every 5,000 steps (in a directory of the same name) stay local.
 
 Requirements: Python 3.10+, PyTorch (tested with 2.14), and Numba (tested with 0.68) with NumPy. Training uses Apple's MPS or CUDA when available, with the model compiled by `torch.compile`.
 
@@ -167,6 +183,7 @@ Requirements: Python 3.10+, PyTorch (tested with 2.14), and Numba (tested with 0
 ```sh
 ./run_sweep.sh         # large model: trains 2 x 5 runs in parallel, probes them, writes results.md
 ./run_sweep.sh 2 32    # small model
+./run_sweep.sh 2 32 rope    # small model with RoPE
 for seed in 0 1 2 3 4; do python train.py --rope --eps 0.05 --seed $seed --out runs/L4_d64_rope/eps0.05/s$seed; done
 ```
 

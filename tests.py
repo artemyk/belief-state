@@ -248,11 +248,13 @@ class Model(unittest.TestCase):
             torch.testing.assert_close(model(changed, features=True)[1][:, :9], features[:, :9], rtol=0, atol=1e-6)
 
     def test_parameter_counts(self):
-        """README: 144k parameters (Shai et al. 2024 architecture), 142k with RoPE, and 20k (2 layers, d_model 32)."""
+        """README: 144k parameters (Shai et al. 2024 architecture) and 20k (2 layers, d_model 32); 142k and 19k with
+        RoPE."""
         count = lambda cfg: sum(p.numel() for p in Transformer(cfg).parameters())
         self.assertEqual(count(Config()), 144_354)
         self.assertEqual(count(Config(rope=True)), 142_306)
         self.assertEqual(count(Config(n_layers=2, d_model=32, d_mlp=128)), 20_338)
+        self.assertEqual(count(Config(n_layers=2, d_model=32, d_mlp=128, rope=True)), 19_314)
 
 
 class BeliefModel(torch.nn.Module):

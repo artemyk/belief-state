@@ -9,7 +9,8 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean, stdev
 
-NAMES = {(4, 64, False): "large", (4, 64, True): "large, RoPE", (2, 32, False): "small"}  # labels used in the README
+NAMES = {(4, 64, False): "large", (4, 64, True): "large, RoPE", (2, 32, False): "small",
+         (2, 32, True): "small, RoPE"}  # labels used in the README
 SPLITS = [("Random split", ""), ("Odd/even split", "parity_"), ("First half to second half", "early_"),
           ("Second half to first half", "late_")]
 # (column, network prefix, target prefix): result keys are <network><split><target>r2_<weighting>
