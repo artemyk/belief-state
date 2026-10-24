@@ -12,8 +12,12 @@ In addition, before each emission the hidden state jumps to one of the other fou
 probability eps. Without mixing (eps = 0) this is the RRXOR process of Crutchfield and Feldman (2003).
 
 Edge-emitting convention: T[x, s, t] is the probability of emitting token x and moving to state t from state s.
+
+Sampling and Bayesian filtering are loops over sequences and positions, compiled with Numba.
 """
+import numpy as np
 import torch
+from numba import njit
 
 A, B, C, D, E = range(5)
 
@@ -37,29 +41,53 @@ def stationary_distribution(T: torch.Tensor) -> torch.Tensor:
     return pi / pi.sum()
 
 
+@njit(cache=True)
+def _sample(cdf: np.ndarray, initial_cdf: np.ndarray, u: np.ndarray) -> np.ndarray:
+    """Inverse-CDF sampling: each outcome is the number of cumulative probabilities, all but the last (which is 1),
+    at or below a uniform draw u[b, i]. u[b, 0] draws the initial state; u[b, i + 1] the i-th outcome, a token and the
+    next state, from the row cdf[state]."""
+    batch, length = u.shape[0], u.shape[1] - 1
+    tokens = np.empty((batch, length), np.int64)
+    for b in range(batch):
+        state = np.searchsorted(initial_cdf, u[b, 0], side="right")
+        for i in range(length):
+            outcome = np.searchsorted(cdf[state], u[b, i + 1], side="right")
+            tokens[b, i], state = outcome // 5, outcome % 5
+    return tokens
+
+
 def sample(T: torch.Tensor, batch: int, length: int, generator: torch.Generator | None = None) -> torch.Tensor:
     """Token sequences (batch, length), each started from the stationary distribution."""
-    pi = stationary_distribution(T)
-    state = torch.multinomial(pi.expand(batch, 5), 1, generator=generator).squeeze(1)
     joint = T.permute(1, 0, 2).reshape(5, 10)  # joint[s, 5 x + t] = T[x, s, t]
-    tokens = torch.empty(batch, length, dtype=torch.long)
-    for i in range(length):
-        outcome = torch.multinomial(joint[state], 1, generator=generator).squeeze(1)
-        tokens[:, i], state = outcome // 5, outcome % 5
-    return tokens
+    cdf, initial_cdf = joint.cumsum(1)[:, :-1], stationary_distribution(T).cumsum(0)[:-1]
+    u = torch.rand(batch, length + 1, dtype=torch.float64, generator=generator)
+    return torch.from_numpy(_sample(cdf.contiguous().numpy(), initial_cdf.numpy(), u.numpy()))
+
+
+@njit(cache=True, error_model="numpy")
+def _beliefs(T: np.ndarray, initial: np.ndarray, tokens: np.ndarray) -> np.ndarray:
+    batch, length = tokens.shape
+    out = np.empty((batch, length + 1, 5))
+    for b in range(batch):
+        out[b, 0] = initial
+        for i in range(length):
+            x, total = tokens[b, i], 0.0
+            for t in range(5):
+                unnormalized = 0.0
+                for s in range(5):
+                    unnormalized += out[b, i, s] * T[x, s, t]
+                out[b, i + 1, t] = unnormalized
+                total += unnormalized
+            for t in range(5):
+                out[b, i + 1, t] /= total
+    return out
 
 
 def beliefs(T: torch.Tensor, tokens: torch.Tensor) -> torch.Tensor:
     """Bayesian belief states (batch, length + 1, 5): the posterior over hidden states before the first token and
     after each prefix of the sequence, starting from the stationary distribution. Sequences must have positive
     probability (for eps = 0 an impossible token gives 0 / 0)."""
-    belief = stationary_distribution(T).expand(len(tokens), 5)
-    out = [belief]
-    for i in range(tokens.shape[1]):
-        unnormalized = torch.einsum("bs,bst->bt", belief, T[tokens[:, i]])
-        belief = unnormalized / unnormalized.sum(1, keepdim=True)
-        out.append(belief)
-    return torch.stack(out, 1)
+    return torch.from_numpy(_beliefs(T.numpy(), stationary_distribution(T).numpy(), tokens.numpy()))
 
 
 def next_token_probabilities(T: torch.Tensor, belief: torch.Tensor) -> torch.Tensor:

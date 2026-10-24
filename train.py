@@ -48,7 +48,10 @@ T = mrrxor.transition_tensor(args.eps)
 
 cfg = Config(context=args.context, n_layers=args.layers, d_model=args.d_model, d_mlp=4 * args.d_model, rope=args.rope)
 model = untrained(cfg, args.init_std, args.seed).to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+# Compiling merges the many small GPU kernels of this small model (its GPU time per step is about 1.5x shorter on
+# MPS); on the CPU it is slower. The test KL and the saved weights use the uncompiled model, which shares its parameters.
+forward = model if device.type == "cpu" else torch.compile(model)
+optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, fused=True)
 scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [
     torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1e-3, total_iters=args.warmup),
     torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, args.max_steps - args.warmup),
@@ -79,7 +82,7 @@ while step < args.max_steps:
     inputs, targets = tokens[:, :-1], tokens[:, 1:]
     optimal = mrrxor.optimal_predictions(T, inputs)  # (batch, context, 2), aligned with the logits
 
-    logits = model(inputs.to(device))
+    logits = forward(inputs.to(device))
     loss = F.cross_entropy(logits.flatten(0, 1), targets.to(device).flatten())
     optimizer.zero_grad(set_to_none=True)
     loss.backward()

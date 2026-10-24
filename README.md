@@ -160,7 +160,7 @@ Fitted on history lengths 17–32, scored on lengths 1–16:
 
 The repository keeps one file per run, `runs/L<layers>_d<d_model>/eps<ε>/s<seed>.pt`: the final weights and the training summary (steps, training and test KL). The untrained network is regenerated from the seed. The run's log (`.log`), probe results (`.json`) and a checkpoint every 5,000 steps (in a directory of the same name) stay local.
 
-Requirements: Python 3.10+ and PyTorch (tested with 2.14), plus NumPy for the tests. Training uses Apple's MPS or CUDA when available.
+Requirements: Python 3.10+, PyTorch (tested with 2.14), and Numba (tested with 0.68) with NumPy. Training uses Apple's MPS or CUDA when available, with the model compiled by `torch.compile`.
 
 ## Reproduce
 
