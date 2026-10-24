@@ -9,7 +9,7 @@ logged every `--log-every` steps, and the current weights are saved to <out>/ste
 steps, to follow training. <out>.pt holds the final weights and the training summary (steps, training and test KL,
 whether the target was reached); it is the only file of a run kept in the repository.
 
-Usage: python train.py --eps 0.05 --seed 0 --out runs/L4_d64/eps0.05_s0
+Usage: python train.py --eps 0.05 --seed 0 --out runs/L4_d64/eps0.05/s0
 """
 import argparse
 import time
@@ -38,7 +38,7 @@ parser.add_argument("--kl-target", type=float, default=1e-4)
 parser.add_argument("--window", type=int, default=500)
 parser.add_argument("--log-every", type=int, default=1000)
 parser.add_argument("--ckpt-every", type=int, default=5000)
-parser.add_argument("--out", type=Path, required=True, help="run name, e.g. runs/L4_d64/eps0.05_s0 (no extension)")
+parser.add_argument("--out", type=Path, required=True, help="run name, e.g. runs/L4_d64/eps0.05/s0 (no extension)")
 args = parser.parse_args()
 
 device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")

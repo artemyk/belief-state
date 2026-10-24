@@ -36,7 +36,7 @@ Two controls use the same features and splits (one solve fits all targets):
 Also reports the test KL of the checkpoint: the mean KL divergence from the Bayes-optimal next-token distribution
 to the model's, over all positions of the fixed held-out set of 4,096 sequences used in train.py.
 
-Usage: python probe.py runs/<model>/<run>.pt [more runs] [--checkpoint final|latest|all|step_<step>]
+Usage: python probe.py runs/<model>/eps<eps>/s<seed>.pt [more runs] [--checkpoint final|latest|all|step_<step>]
   A run can also be given without the .pt extension.
   final: probes <run>.pt and, as a baseline, the untrained network (regenerated from the run's seed), and writes
          <run>.json
@@ -208,8 +208,9 @@ def main() -> None:
             initial = untrained(model.cfg, float(meta["init_std"]), int(meta["seed"])).eval()
             result.update({f"init_{key}": value for key, value in probe(initial, T, **settings).items()})
         results_path.write_text(json.dumps(result, indent=2))
-        print(f"{run.parent.name}/{run.name} ({name}, step {result['steps']}): test KL {test_kl:.2e}, pooled held-out "
-              f"R^2 {result['r2_uniform']:.3f} (uniform), {result['r2_process']:.3f} (process); next-token "
+        print(f"{run.parent.parent.name}/{run.parent.name}/{run.name} ({name}, step {result['steps']}): "
+              f"test KL {test_kl:.2e}, pooled held-out R^2 {result['r2_uniform']:.3f} (uniform), "
+              f"{result['r2_process']:.3f} (process); next-token "
               f"{result['next_r2_uniform']:.3f}, {result['next_r2_process']:.3f}; shuffled "
               f"{result['shuffled_r2_uniform']:.3f}, {result['shuffled_r2_process']:.3f}"
               + (f"; untrained {result['init_r2_uniform']:.3f}, {result['init_r2_process']:.3f}"

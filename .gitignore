@@ -1,7 +1,7 @@
 __pycache__/
 .DS_Store
 archive/
-# Of each run, only the final checkpoint runs/<model>/<run>.pt (final weights and training summary) is tracked. Its
-# log, intermediate checkpoints and probe results stay local.
-runs/*/*
-!runs/*/*.pt
+# Of each run, only the final checkpoint runs/<model>/eps<eps>/s<seed>.pt (final weights and training summary) is
+# tracked. Its log, intermediate checkpoints and probe results stay local.
+runs/*/*/*
+!runs/*/*/*.pt

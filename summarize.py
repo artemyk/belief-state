@@ -1,9 +1,9 @@
-"""Collect the probe results runs/<model>/<run>.json into the markdown tables of results.md (also printed). There is
-one section per split of the probe's rows (random; odd/even positions), each with a table for uniform weighting and a
-collapsed one for process weighting. Rows are model sizes and mixing probabilities; entries are the mean ± standard
-deviation over seeds of the held-out R^2 of the belief-state probe (bold) and of its three controls (the last being the
-belief-state probe on the untrained network). Runs that did not reach the training-KL target, and rows with other than
-5 seeds, are noted below the tables."""
+"""Collect the probe results runs/<model>/eps<eps>/s<seed>.json into the markdown tables of results.md (also
+printed). There is one section per split of the probe's rows (random; odd/even positions), each with a table for
+uniform weighting and a collapsed one for process weighting. Rows are model sizes and mixing probabilities; entries
+are the mean ± standard deviation over seeds of the held-out R^2 of the belief-state probe (bold) and of its three
+controls (the last being the belief-state probe on the untrained network). Runs that did not reach the training-KL
+target, and rows with other than 5 seeds, are noted below the tables."""
 import json
 from collections import defaultdict
 from pathlib import Path
@@ -16,7 +16,7 @@ COLUMNS = [("belief state", "", ""), ("next-token distribution", "", "next_"),
            ("shuffled belief state", "", "shuffled_"), ("untrained network", "init_", "")]
 
 runs = defaultdict(list)  # (layers, d_model, eps) -> results
-for path in sorted(Path("runs").glob("*/*.json")):
+for path in sorted(Path("runs").glob("*/*/*.json")):
     result = json.loads(path.read_text())
     runs[result["layers"], result["d_model"], result["eps"]].append(result)
 

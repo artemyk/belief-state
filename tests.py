@@ -341,12 +341,12 @@ class Probe(unittest.TestCase):
     def test_scripts_end_to_end(self):
         """train.py, probe.py (final and all checkpoints) and summarize.py on a tiny model for 30 steps."""
         with tempfile.TemporaryDirectory() as tmp:
-            run = Path(tmp) / "runs" / "L1_d16" / "eps0.05_s0"
+            run = Path(tmp) / "runs" / "L1_d16" / "eps0.05" / "s0"
             python = [sys.executable]
             subprocess.run(python + [str(ROOT / "train.py"), "--layers", "1", "--d-model", "16", "--max-steps", "30",
                                      "--warmup", "5", "--log-every", "10", "--ckpt-every", "10", "--out", str(run)],
                            check=True, capture_output=True, cwd=ROOT)
-            self.assertEqual(sorted(p.name for p in run.parent.iterdir()), ["eps0.05_s0", "eps0.05_s0.pt"])
+            self.assertEqual(sorted(p.name for p in run.parent.iterdir()), ["s0", "s0.pt"])
             self.assertEqual(sorted(p.name for p in run.iterdir()),
                              ["step_000010.pt", "step_000020.pt", "step_000030.pt"])
             final = torch.load(f"{run}.pt", weights_only=True)
