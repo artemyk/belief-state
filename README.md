@@ -104,7 +104,7 @@ The probe is fitted on the odd positions (history lengths 1, 3, …, 31) of the 
 | `run_sweep.sh` | Trains and probes ε = 0.05, 0.01 and 0 with 5 seeds each, for one model size |
 | `tests.py` | Self-contained checks of the process, the model, the probe and the scripts |
 
-Each run is a directory `runs/L<layers>_d<d_model>/eps<ε>_s<seed>/`. The repository keeps only its `final.pt`: the final weights and the training summary (steps, training and test KL). The untrained network is regenerated from the seed. The log, a checkpoint every 5,000 steps, and the probe results stay local.
+The repository keeps one file per run, `runs/L<layers>_d<d_model>/eps<ε>_s<seed>.pt`: the final weights and the training summary (steps, training and test KL). The untrained network is regenerated from the seed. The run's log (`.log`), probe results (`.json`) and a checkpoint every 5,000 steps (in a directory of the same name) stay local.
 
 Requirements: Python 3.10+ and PyTorch (tested with 2.14), plus NumPy for the tests. Training uses Apple's MPS or CUDA when available.
 
@@ -118,8 +118,8 @@ Requirements: Python 3.10+ and PyTorch (tested with 2.14), plus NumPy for the te
 To recreate the tables from the stored checkpoints:
 
 ```sh
-python probe.py runs/*/*    # writes probe.json in each run directory
-python summarize.py         # writes results.md
+python probe.py runs/*/*.pt    # writes runs/<model>/<run>.json
+python summarize.py            # writes results.md
 ```
 
 To follow a run while it trains, `python probe.py runs/<model>/<run> --checkpoint latest` probes the newest checkpoint, and `--checkpoint all` probes every checkpoint.

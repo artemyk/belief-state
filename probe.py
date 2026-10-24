@@ -8,7 +8,7 @@ the probe is scored with
 R^2 = 1 - weighted sum of squared errors / weighted sum of squared deviations from the weighted mean, pooled over
 the target's coordinates. Two splits of the rows:
   random split    an affine least-squares probe fitted on all positions of the training trajectories and scored on
-                  all positions of the test trajectories (in probe.json also for each position separately)
+                  all positions of the test trajectories (in the results also for each position separately)
   odd/even split  (keys prefixed parity_) fitted on the odd positions (history lengths 1, 3, ..., 31) of the training
                   trajectories and scored on the even positions of the test trajectories, so that no history is
                   shared and the probe must carry over to positions it has not seen. Least squares extrapolates badly
@@ -36,11 +36,12 @@ Two controls use the same features and splits (one solve fits all targets):
 Also reports the test KL of the checkpoint: the mean KL divergence from the Bayes-optimal next-token distribution
 to the model's, over all positions of the fixed held-out set of 4,096 sequences used in train.py.
 
-Usage: python probe.py runs/<model>/<run> [more runs] [--checkpoint final|latest|all|step_<step>]
-  final: probes final.pt and, as a baseline, the untrained network (regenerated from the run's seed), and writes
-         probe.json
-  step_<step>: probes that checkpoint and writes probe_<name>.json
-  latest: the newest step_<step>.pt; all: every step_<step>.pt not yet probed
+Usage: python probe.py runs/<model>/<run>.pt [more runs] [--checkpoint final|latest|all|step_<step>]
+  A run can also be given without the .pt extension.
+  final: probes <run>.pt and, as a baseline, the untrained network (regenerated from the run's seed), and writes
+         <run>.json
+  step_<step>: probes <run>/step_<step>.pt and writes <run>/probe_step_<step>.json
+  latest: the newest step checkpoint; all: every step checkpoint not yet probed
 """
 import argparse
 import json
@@ -164,12 +165,19 @@ def load(path: Path) -> tuple[Transformer, dict]:
     return model.eval(), checkpoint
 
 
+def files(run: Path, name: str) -> tuple[Path, Path]:
+    """The checkpoint and the results file of a run (named without extension) for a checkpoint name."""
+    if name == "final":
+        return Path(f"{run}.pt"), Path(f"{run}.json")
+    return run / f"{name}.pt", run / f"probe_{name}.json"
+
+
 def checkpoint_names(run: Path, checkpoint: str) -> list[str]:
     steps = sorted(path.stem for path in run.glob("step_*.pt"))
     if checkpoint == "latest":
         return steps[-1:]
     if checkpoint == "all":
-        return [name for name in steps if not (run / f"probe_{name}.json").exists()]
+        return [name for name in steps if not files(run, name)[1].exists()]
     return [checkpoint]
 
 
@@ -183,8 +191,10 @@ def main() -> None:
     args = parser.parse_args()
     settings = dict(count=args.trajectories, test_fraction=args.test_fraction, seed=args.seed)
 
-    for run, name in ((run, name) for run in args.runs for name in checkpoint_names(run, args.checkpoint)):
-        model, checkpoint = load(run / f"{name}.pt")
+    runs = [Path(str(run).removesuffix(".pt")) for run in args.runs]
+    for run, name in ((run, name) for run in runs for name in checkpoint_names(run, args.checkpoint)):
+        checkpoint_path, results_path = files(run, name)
+        model, checkpoint = load(checkpoint_path)
         meta = checkpoint["args"]
         T = mrrxor.transition_tensor(float(meta["eps"]))
         test_tokens, test_optimal = mrrxor.test_set(T, model.cfg.context)
@@ -197,9 +207,7 @@ def main() -> None:
             result.update(train_kl=checkpoint["train_kl"], reached_target=checkpoint["reached_target"])
             initial = untrained(model.cfg, float(meta["init_std"]), int(meta["seed"])).eval()
             result.update({f"init_{key}": value for key, value in probe(initial, T, **settings).items()})
-            (run / "probe.json").write_text(json.dumps(result, indent=2))
-        else:
-            (run / f"probe_{name}.json").write_text(json.dumps(result, indent=2))
+        results_path.write_text(json.dumps(result, indent=2))
         print(f"{run.parent.name}/{run.name} ({name}, step {result['steps']}): test KL {test_kl:.2e}, pooled held-out "
               f"R^2 {result['r2_uniform']:.3f} (uniform), {result['r2_process']:.3f} (process); next-token "
               f"{result['next_r2_uniform']:.3f}, {result['next_r2_process']:.3f}; shuffled "

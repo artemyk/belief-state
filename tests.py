@@ -346,16 +346,17 @@ class Probe(unittest.TestCase):
             subprocess.run(python + [str(ROOT / "train.py"), "--layers", "1", "--d-model", "16", "--max-steps", "30",
                                      "--warmup", "5", "--log-every", "10", "--ckpt-every", "10", "--out", str(run)],
                            check=True, capture_output=True, cwd=ROOT)
+            self.assertEqual(sorted(p.name for p in run.parent.iterdir()), ["eps0.05_s0", "eps0.05_s0.pt"])
             self.assertEqual(sorted(p.name for p in run.iterdir()),
-                             ["final.pt", "step_000010.pt", "step_000020.pt", "step_000030.pt"])
-            final = torch.load(run / "final.pt", weights_only=True)
+                             ["step_000010.pt", "step_000020.pt", "step_000030.pt"])
+            final = torch.load(f"{run}.pt", weights_only=True)
             self.assertEqual(final["step"], 30)
             self.assertFalse(final["reached_target"])
             self.assertEqual({v.device.type for v in final["model"].values()}, {"cpu"})
-            for checkpoint in ("final", "all"):
-                subprocess.run(python + [str(ROOT / "probe.py"), str(run), "--trajectories", "256", "--checkpoint",
+            for name, checkpoint in ((f"{run}.pt", "final"), (str(run), "all")):  # a run with or without .pt
+                subprocess.run(python + [str(ROOT / "probe.py"), name, "--trajectories", "256", "--checkpoint",
                                          checkpoint], check=True, capture_output=True, cwd=ROOT)
-            result = json.loads((run / "probe.json").read_text())
+            result = json.loads(Path(f"{run}.json").read_text())
             self.assertEqual(result["layers"], 1)
             for key in ("r2", "next_r2", "shuffled_r2", "init_r2", "parity_r2", "parity_next_r2",
                         "parity_shuffled_r2", "init_parity_r2"):

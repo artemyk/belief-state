@@ -5,8 +5,8 @@ input. Progress is measured by the exact training KL: the KL divergence from the
 distribution (computed from the exact belief states) to the model's prediction, averaged over the positions and
 sequences of the training batches. Training stops when its mean over the last `--window` steps falls below
 `--kl-target`, or after `--max-steps`. The same KL on a fixed held-out set of 4,096 sequences (the test KL) is
-logged every `--log-every` steps, and the current weights are saved to step_<step>.pt every `--ckpt-every`
-steps, to follow training. final.pt holds the final weights and the training summary (steps, training and test KL,
+logged every `--log-every` steps, and the current weights are saved to <out>/step_<step>.pt every `--ckpt-every`
+steps, to follow training. <out>.pt holds the final weights and the training summary (steps, training and test KL,
 whether the target was reached); it is the only file of a run kept in the repository.
 
 Usage: python train.py --eps 0.05 --seed 0 --out runs/L4_d64/eps0.05_s0
@@ -38,7 +38,7 @@ parser.add_argument("--kl-target", type=float, default=1e-4)
 parser.add_argument("--window", type=int, default=500)
 parser.add_argument("--log-every", type=int, default=1000)
 parser.add_argument("--ckpt-every", type=int, default=5000)
-parser.add_argument("--out", type=Path, required=True)
+parser.add_argument("--out", type=Path, required=True, help="run name, e.g. runs/L4_d64/eps0.05_s0 (no extension)")
 args = parser.parse_args()
 
 device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
@@ -67,9 +67,9 @@ def test_kl() -> float:
 RUN_SETTINGS = ("eps", "seed", "init_std", "context", "batch", "lr", "warmup", "max_steps", "kl_target", "window")
 
 
-def save(name: str, step: int, **summary) -> None:
+def save(path: Path, step: int, **summary) -> None:
     torch.save({"config": vars(cfg), "args": {k: str(getattr(args, k)) for k in RUN_SETTINGS}, "step": step,
-                "model": {key: value.cpu() for key, value in model.state_dict().items()}, **summary}, args.out / name)
+                "model": {key: value.cpu() for key, value in model.state_dict().items()}, **summary}, path)
 
 
 recent_kl, started, step = deque(maxlen=args.window), time.time(), 0
@@ -93,11 +93,12 @@ while step < args.max_steps:
         print(f"step {step:7d}  lr {scheduler.get_last_lr()[0]:.2e}  train KL {kl:.2e}  test KL {test_kl():.2e}"
               f"  ({step / (time.time() - started):.0f} steps/s)", flush=True)
     if step % args.ckpt_every == 0:
-        save(f"step_{step:06d}.pt", step)
+        save(args.out / f"step_{step:06d}.pt", step)
     if done:
         break
 
 reached = len(recent_kl) == args.window and kl < args.kl_target
-save("final.pt", step, train_kl=kl, test_kl=test_kl(), reached_target=reached, seconds=time.time() - started)
+save(Path(f"{args.out}.pt"), step, train_kl=kl, test_kl=test_kl(), reached_target=reached,
+     seconds=time.time() - started)
 print(f"{'reached' if reached else 'did not reach'} train KL {args.kl_target:g} after {step} steps "
       f"(train KL {kl:.2e})", flush=True)
