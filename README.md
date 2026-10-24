@@ -12,7 +12,7 @@ Each entry is the held-out R² of a linear probe from the residual stream, as me
 
 - **Next-token distribution:** the target is the Bayes-optimal next-token distribution, which the network is trained to output.
 - **Shuffled belief state:** the distinct belief states are randomly permuted among themselves. Histories with the same belief still share a target, but the targets no longer reflect the geometry of the beliefs, so this measures the R² the probe gets for an arbitrary function of the belief. For ε = 0, there are only 35 distinct beliefs and the network separates them, so with the random split any relabeling of them is about as decodable as the beliefs themselves.
-- **Untrained network:** the same probes on the network at initialization (rows marked *untrained*).
+- **Untrained network:** the belief-state probe on the network at initialization.
 
 The tables shown below weight histories *uniformly*: every sequence with positive probability counts equally. The collapsed tables use *process* weighting: trajectories are sampled from the process, so typical histories dominate.
 
@@ -22,38 +22,26 @@ The probe is fitted on all positions of 80% of the trajectories and scored on al
 
 <!-- results random -->
 
-| model | ε | belief state | next-token distribution | shuffled belief state |
-|---|---:|---:|---:|---:|
-| large | 0.05 | **0.93 ± 0.01** | 1.00 ± 0.00 | 0.11 ± 0.01 |
-| large | 0.01 | **0.91 ± 0.01** | 0.98 ± 0.00 | 0.15 ± 0.01 |
-| large | 0 | **0.81 ± 0.03** | 1.00 ± 0.00 | 0.84 ± 0.01 |
-| large, untrained | 0.05 | 0.24 ± 0.01 | 0.18 ± 0.01 | 0.12 ± 0.01 |
-| large, untrained | 0.01 | 0.19 ± 0.01 | 0.16 ± 0.01 | 0.15 ± 0.01 |
-| large, untrained | 0 | 0.12 ± 0.01 | 0.10 ± 0.01 | 0.31 ± 0.01 |
-| small | 0.05 | **0.73 ± 0.03** | 0.98 ± 0.00 | 0.06 ± 0.01 |
-| small | 0.01 | **0.70 ± 0.03** | 0.94 ± 0.01 | 0.08 ± 0.01 |
-| small | 0 | **0.60 ± 0.02** | 0.96 ± 0.00 | 0.65 ± 0.01 |
-| small, untrained | 0.05 | 0.20 ± 0.00 | 0.07 ± 0.01 | 0.08 ± 0.00 |
-| small, untrained | 0.01 | 0.15 ± 0.00 | 0.07 ± 0.01 | 0.11 ± 0.00 |
-| small, untrained | 0 | 0.10 ± 0.00 | 0.04 ± 0.00 | 0.25 ± 0.00 |
+| model | ε | belief state | next-token distribution | shuffled belief state | untrained network |
+|---|---:|---:|---:|---:|---:|
+| large | 0.05 | **0.93 ± 0.01** | 1.00 ± 0.00 | 0.11 ± 0.01 | 0.24 ± 0.01 |
+| large | 0.01 | **0.91 ± 0.01** | 0.98 ± 0.00 | 0.15 ± 0.01 | 0.19 ± 0.01 |
+| large | 0 | **0.81 ± 0.03** | 1.00 ± 0.00 | 0.84 ± 0.01 | 0.12 ± 0.01 |
+| small | 0.05 | **0.73 ± 0.03** | 0.98 ± 0.00 | 0.06 ± 0.01 | 0.20 ± 0.00 |
+| small | 0.01 | **0.70 ± 0.03** | 0.94 ± 0.01 | 0.08 ± 0.01 | 0.15 ± 0.00 |
+| small | 0 | **0.60 ± 0.02** | 0.96 ± 0.00 | 0.65 ± 0.01 | 0.10 ± 0.00 |
 
 <details>
 <summary>Process weighting</summary>
 
-| model | ε | belief state | next-token distribution | shuffled belief state |
-|---|---:|---:|---:|---:|
-| large | 0.05 | **0.92 ± 0.01** | 1.00 ± 0.00 | 0.12 ± 0.01 |
-| large | 0.01 | **0.93 ± 0.01** | 1.00 ± 0.00 | 0.13 ± 0.01 |
-| large | 0 | **0.81 ± 0.03** | 1.00 ± 0.00 | 0.84 ± 0.01 |
-| large, untrained | 0.05 | 0.20 ± 0.01 | 0.14 ± 0.02 | 0.13 ± 0.01 |
-| large, untrained | 0.01 | 0.13 ± 0.01 | 0.11 ± 0.02 | 0.13 ± 0.01 |
-| large, untrained | 0 | 0.12 ± 0.01 | 0.10 ± 0.01 | 0.31 ± 0.01 |
-| small | 0.05 | **0.69 ± 0.04** | 0.99 ± 0.00 | 0.07 ± 0.01 |
-| small | 0.01 | **0.69 ± 0.03** | 0.98 ± 0.00 | 0.07 ± 0.00 |
-| small | 0 | **0.60 ± 0.02** | 0.96 ± 0.00 | 0.65 ± 0.01 |
-| small, untrained | 0.05 | 0.16 ± 0.00 | 0.05 ± 0.01 | 0.08 ± 0.00 |
-| small, untrained | 0.01 | 0.11 ± 0.00 | 0.04 ± 0.01 | 0.09 ± 0.00 |
-| small, untrained | 0 | 0.10 ± 0.00 | 0.04 ± 0.00 | 0.25 ± 0.00 |
+| model | ε | belief state | next-token distribution | shuffled belief state | untrained network |
+|---|---:|---:|---:|---:|---:|
+| large | 0.05 | **0.92 ± 0.01** | 1.00 ± 0.00 | 0.12 ± 0.01 | 0.20 ± 0.01 |
+| large | 0.01 | **0.93 ± 0.01** | 1.00 ± 0.00 | 0.13 ± 0.01 | 0.13 ± 0.01 |
+| large | 0 | **0.81 ± 0.03** | 1.00 ± 0.00 | 0.84 ± 0.01 | 0.12 ± 0.01 |
+| small | 0.05 | **0.69 ± 0.04** | 0.99 ± 0.00 | 0.07 ± 0.01 | 0.16 ± 0.00 |
+| small | 0.01 | **0.69 ± 0.03** | 0.98 ± 0.00 | 0.07 ± 0.00 | 0.11 ± 0.00 |
+| small | 0 | **0.60 ± 0.02** | 0.96 ± 0.00 | 0.65 ± 0.01 | 0.10 ± 0.00 |
 
 </details>
 
@@ -65,38 +53,26 @@ The probe is fitted on the odd positions (history lengths 1, 3, …, 31) of the 
 
 <!-- results parity -->
 
-| model | ε | belief state | next-token distribution | shuffled belief state |
-|---|---:|---:|---:|---:|
-| large | 0.05 | **0.85 ± 0.03** | 0.99 ± 0.00 | -0.01 ± 0.00 |
-| large | 0.01 | **0.81 ± 0.03** | 0.98 ± 0.01 | -0.02 ± 0.01 |
-| large | 0 | **0.67 ± 0.01** | 0.99 ± 0.01 | 0.59 ± 0.01 |
-| large, untrained | 0.05 | 0.16 ± 0.00 | 0.01 ± 0.01 | -0.01 ± 0.00 |
-| large, untrained | 0.01 | 0.12 ± 0.00 | 0.01 ± 0.01 | -0.02 ± 0.00 |
-| large, untrained | 0 | 0.08 ± 0.00 | 0.00 ± 0.00 | 0.05 ± 0.02 |
-| small | 0.05 | **0.63 ± 0.04** | 0.98 ± 0.00 | 0.00 ± 0.00 |
-| small | 0.01 | **0.63 ± 0.03** | 0.93 ± 0.01 | -0.02 ± 0.00 |
-| small | 0 | **0.56 ± 0.05** | 0.95 ± 0.00 | 0.49 ± 0.02 |
-| small, untrained | 0.05 | 0.16 ± 0.00 | 0.00 ± 0.00 | 0.00 ± 0.00 |
-| small, untrained | 0.01 | 0.11 ± 0.00 | 0.00 ± 0.00 | -0.01 ± 0.01 |
-| small, untrained | 0 | 0.08 ± 0.00 | 0.00 ± 0.00 | 0.02 ± 0.02 |
+| model | ε | belief state | next-token distribution | shuffled belief state | untrained network |
+|---|---:|---:|---:|---:|---:|
+| large | 0.05 | **0.85 ± 0.03** | 0.99 ± 0.00 | -0.01 ± 0.00 | 0.16 ± 0.00 |
+| large | 0.01 | **0.81 ± 0.03** | 0.98 ± 0.01 | -0.02 ± 0.01 | 0.12 ± 0.00 |
+| large | 0 | **0.67 ± 0.01** | 0.99 ± 0.01 | 0.59 ± 0.01 | 0.08 ± 0.00 |
+| small | 0.05 | **0.63 ± 0.04** | 0.98 ± 0.00 | 0.00 ± 0.00 | 0.16 ± 0.00 |
+| small | 0.01 | **0.63 ± 0.03** | 0.93 ± 0.01 | -0.02 ± 0.00 | 0.11 ± 0.00 |
+| small | 0 | **0.56 ± 0.05** | 0.95 ± 0.00 | 0.49 ± 0.02 | 0.08 ± 0.00 |
 
 <details>
 <summary>Process weighting</summary>
 
-| model | ε | belief state | next-token distribution | shuffled belief state |
-|---|---:|---:|---:|---:|
-| large | 0.05 | **0.83 ± 0.03** | 1.00 ± 0.00 | -0.01 ± 0.00 |
-| large | 0.01 | **0.84 ± 0.01** | 0.99 ± 0.00 | -0.01 ± 0.00 |
-| large | 0 | **0.67 ± 0.01** | 0.99 ± 0.01 | 0.58 ± 0.01 |
-| large, untrained | 0.05 | 0.14 ± 0.00 | 0.00 ± 0.00 | 0.00 ± 0.00 |
-| large, untrained | 0.01 | 0.09 ± 0.00 | 0.00 ± 0.00 | -0.02 ± 0.01 |
-| large, untrained | 0 | 0.08 ± 0.00 | 0.00 ± 0.00 | 0.05 ± 0.02 |
-| small | 0.05 | **0.58 ± 0.04** | 0.99 ± 0.00 | 0.00 ± 0.00 |
-| small | 0.01 | **0.62 ± 0.05** | 0.98 ± 0.00 | -0.01 ± 0.00 |
-| small | 0 | **0.56 ± 0.05** | 0.95 ± 0.01 | 0.49 ± 0.02 |
-| small, untrained | 0.05 | 0.14 ± 0.00 | 0.00 ± 0.00 | 0.00 ± 0.00 |
-| small, untrained | 0.01 | 0.09 ± 0.00 | 0.00 ± 0.00 | -0.01 ± 0.00 |
-| small, untrained | 0 | 0.08 ± 0.00 | 0.00 ± 0.00 | 0.02 ± 0.02 |
+| model | ε | belief state | next-token distribution | shuffled belief state | untrained network |
+|---|---:|---:|---:|---:|---:|
+| large | 0.05 | **0.83 ± 0.03** | 1.00 ± 0.00 | -0.01 ± 0.00 | 0.14 ± 0.00 |
+| large | 0.01 | **0.84 ± 0.01** | 0.99 ± 0.00 | -0.01 ± 0.00 | 0.09 ± 0.00 |
+| large | 0 | **0.67 ± 0.01** | 0.99 ± 0.01 | 0.58 ± 0.01 | 0.08 ± 0.00 |
+| small | 0.05 | **0.58 ± 0.04** | 0.99 ± 0.00 | 0.00 ± 0.00 | 0.14 ± 0.00 |
+| small | 0.01 | **0.62 ± 0.05** | 0.98 ± 0.00 | -0.01 ± 0.00 | 0.09 ± 0.00 |
+| small | 0 | **0.56 ± 0.05** | 0.95 ± 0.01 | 0.49 ± 0.02 | 0.08 ± 0.00 |
 
 </details>
 

@@ -366,8 +366,9 @@ class Probe(unittest.TestCase):
                                      text=True, cwd=tmp).stdout
             for heading in ("### Random split", "### Odd/even split"):
                 self.assertIn(heading, summary)
+            self.assertIn("| model | ε | belief state | next-token distribution | shuffled belief state | "
+                          "untrained network |", summary)
             self.assertIn("| 1 layers, d_model 16 | 0.05 | **", summary)
-            self.assertIn("| 1 layers, d_model 16, untrained | 0.05 | ", summary)
             self.assertIn("Did not reach the training-KL target: 1 layers, d_model 16, ε = 0.05 (1 of 1 seeds).",
                           summary)
 
