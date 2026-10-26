@@ -1,8 +1,8 @@
 """Train and probe runs on Modal (modal.com) GPUs instead of locally.
 
 Each container trains a group of runs on one GPU, then probes them on the CPU. By default a group is a single run:
-on an L4 a large run takes about 180 steps/s alone, and four concurrent runs about 40 steps/s each, since processes
-take turns on the GPU rather than overlap. Runs are written to the Modal volume belief-state-runs under
+with torch.compile's default mode, a large run on an L4 takes about 180 steps/s alone, and four concurrent runs about
+40 steps/s each. Runs are written to the Modal volume belief-state-runs under
 <tag>/runs/<model>/eps<eps>/s<seed>: the final checkpoint (.pt), the training log (.log) and the probe results (.json),
 as run_sweep.sh writes them locally; no intermediate checkpoints. Copy them back with
   modal volume get --force belief-state-runs <tag>/runs .    # --force: overwrite existing files in runs/

@@ -45,8 +45,10 @@ T = mrrxor.transition_tensor(args.eps)
 cfg = Config(context=args.context, n_layers=args.layers, d_model=args.d_model, d_mlp=4 * args.d_model, rope=args.rope)
 model = untrained(cfg, args.init_std, args.seed).to(device)
 # Compiling merges the many small GPU kernels of this small model (its GPU time per step is about 1.5x shorter on
-# MPS); on the CPU it is slower. The test KL and the saved weights use the uncompiled model, which shares its parameters.
-forward = model if device.type == "cpu" else torch.compile(model)
+# MPS), and on CUDA (mode reduce-overhead) also replays each step as a CUDA graph, about 1.25x faster on an L4; on the
+# CPU it is slower. The test KL and the saved weights use the uncompiled model, which shares its parameters.
+mode = "reduce-overhead" if device.type == "cuda" else "default"
+forward = model if device.type == "cpu" else torch.compile(model, mode=mode)
 optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, fused=True)
 scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [
     torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1e-3, total_iters=args.warmup),
