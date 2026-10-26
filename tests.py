@@ -399,6 +399,7 @@ class Probe(unittest.TestCase):
             summary = subprocess.run(python + [str(ROOT / "summarize.py")], check=True, capture_output=True,
                                      text=True, cwd=tmp).stdout
             self.assertIn("### ε = 0.05", summary)
+            self.assertIn("**Test KL and belief-state R² by probe split**", summary)
             self.assertIn("| model | test KL | random | odd/even | 1st → 2nd half | 2nd → 1st half |", summary)
             self.assertIn(f"| 1 layers, d_model 16 | {final['test_kl']:.1e} | ".replace("e-0", "e-"), summary)
             self.assertIn("| model | next-token distribution | shuffled belief state | untrained network |", summary)

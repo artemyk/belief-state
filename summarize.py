@@ -1,12 +1,12 @@
-"""Collect the probe results runs/<model>/eps<eps>/s<seed>.json into the markdown tables of results.md (also
-printed). There is one section per mixing probability eps, with a row per model (size and kind of position
-embedding) in each table. The first table has the final test KL and the held-out R^2 of the belief-state probe for
-each split of the probe's rows (random; odd/even positions; first half to second half; second half to first half);
-the second has its three controls for the random split (next-token distribution, shuffled belief state, and the
-belief-state probe on the untrained network). Both weight histories uniformly. Collapsed below them are the same two
-tables with process weighting (for eps > 0 only: for eps = 0 the two weightings give nearly the same results) and the
-controls for the held-out splits. Entries are means over seeds, with the standard deviation for the belief state
-(joined by no-break spaces, so that it does not wrap). Below the tables: the number of seeds, if not 5."""
+"""Collect the probe results runs/<model>/eps<eps>/s<seed>.json into the markdown tables of results.md (also printed).
+There is one section per mixing probability eps, with a row per model (size and kind of position embedding) in each
+table, and a bold title above each table. The first table has the final test KL and the held-out R^2 of the
+belief-state probe for each split of the probe's rows (random; odd/even positions; first half to second half; second
+half to first half); the second has its three controls for the random split (next-token distribution, shuffled belief
+state, and the belief-state probe on the untrained network). Both weight histories uniformly. Collapsed below them
+are the same two tables with process weighting (for eps > 0 only: for eps = 0 the two weightings give nearly the same
+results) and the controls for the held-out splits. Entries are means over seeds, with the standard deviation for the
+belief state (joined by no-break spaces, so that it does not wrap). Below the tables: the number of seeds, if not 5."""
 import json
 from collections import defaultdict
 from pathlib import Path
@@ -72,12 +72,18 @@ def controls_table(eps: float, weighting: str, splits: list) -> str:
     return "\n".join(lines)
 
 
+def titled(weighting: str, eps: float) -> list[str]:
+    """The belief-state table and the controls for the random split, each under a bold title."""
+    return [f"**Test KL and belief-state R² by probe split**\n\n{belief_table(eps, weighting)}",
+            f"**R² of the controls, random split**\n\n{controls_table(eps, weighting, SPLITS[:1])}"]
+
+
 def section(eps: float) -> str:
-    parts = [f"### ε = {eps:g}", belief_table(eps, "uniform"), controls_table(eps, "uniform", SPLITS[:1])]
+    parts = [f"### ε = {eps:g}", *titled("uniform", eps)]
     if eps > 0:
-        parts.append(f"<details>\n<summary>Process weighting</summary>\n\n{belief_table(eps, 'process')}\n\n"
-                     f"{controls_table(eps, 'process', SPLITS[:1])}\n\n</details>")
-    parts.append(f"<details>\n<summary>Controls for the held-out splits</summary>\n\n"
+        parts.append("<details>\n<summary>Process weighting</summary>\n\n" + "\n\n".join(titled("process", eps))
+                     + "\n\n</details>")
+    parts.append(f"<details>\n<summary>R² of the controls, held-out splits</summary>\n\n"
                  f"{controls_table(eps, 'uniform', SPLITS[1:])}\n\n</details>")
     return "\n\n".join(parts)
 
