@@ -94,10 +94,10 @@ class Process(unittest.TestCase):
                                            rtol=1e-12)
                 np.testing.assert_allclose(mrrxor.beliefs(T, tokens)[0].numpy(),
                                            joint / joint.sum(1, keepdims=True), atol=1e-12)
-                # entry n: distribution of x_{n+2} given x_1..x_{n+1} = P(x_1..x_{n+1}, 1) / P(x_1..x_{n+1})
+                # entry n: distribution of x_{n+1} given x_1..x_n = P(x_1..x_n, 1) / P(x_1..x_n)
                 predicted = mrrxor.optimal_predictions(T, tokens)[0].numpy()
                 for n in range(5):
-                    one = (joint[n + 1] @ T_ref[1]).sum() / joint[n + 1].sum()
+                    one = (joint[n] @ T_ref[1]).sum() / joint[n].sum()
                     np.testing.assert_allclose(predicted[n], [1 - one, one], atol=1e-12)
             self.assertAlmostEqual(total, 1.0, places=12)
 
@@ -154,18 +154,17 @@ class Process(unittest.TestCase):
 
 class Training(unittest.TestCase):
     def test_optimal_predictions_match_empirical_next_tokens(self):
-        """train.py pairs the logits at position n (input tokens[:, :n + 1]) with optimal_predictions[:, n] and the
-        target tokens[:, n + 1]. Check this pairing empirically: group sampled sequences by their first n + 1 tokens
-        and compare the frequency of token n + 2 with the prediction."""
+        """train.py pairs the logits at position n (which have seen tokens[:, :n]) with optimal_predictions[:, n] and
+        the target tokens[:, n]. Check this pairing empirically: group sampled sequences by their first n tokens (none
+        for n = 0) and compare the frequency of token n + 1 with the prediction."""
         T = mrrxor.transition_tensor(0.05)
         tokens = mrrxor.sample(T, 200_000, 4, torch.Generator().manual_seed(3))
-        inputs, targets = tokens[:, :-1], tokens[:, 1:]
-        optimal = mrrxor.optimal_predictions(T, inputs)
-        for n in range(3):
-            prefixes = (inputs[:, : n + 1] * 2 ** torch.arange(n + 1)).sum(1)
+        optimal = mrrxor.optimal_predictions(T, tokens)
+        for n in range(4):
+            prefixes = (tokens[:, :n] * 2 ** torch.arange(n)).sum(1)
             for code in prefixes.unique():
                 rows = prefixes == code
-                observed = float(targets[rows, n].double().mean())
+                observed = float(tokens[rows, n].double().mean())
                 self.assertTrue(torch.allclose(optimal[rows, n, 1], optimal[rows, n, 1][0]))
                 expected = float(optimal[rows, n, 1][0])
                 self.assertLess(abs(observed - expected), 5 * np.sqrt(0.25 / int(rows.sum())) + 1e-9)
@@ -186,17 +185,20 @@ class Model(unittest.TestCase):
         self.model = untrained(Config(context=16, n_layers=2, d_model=32, d_mlp=128), 0.1, seed=0).eval()
 
     def test_causal(self):
-        """Changing token k leaves the logits and features at positions before k unchanged."""
+        """Position n has seen exactly tokens[:, :n]: changing token k leaves the logits and features at positions up
+        to k unchanged and changes position k + 1. Position 0 reads only BOS, so it is the same for every sequence."""
         tokens = torch.randint(0, 2, (8, 16), generator=torch.Generator().manual_seed(5))
         with torch.no_grad():
             logits, features = self.model(tokens, features=True)
+            torch.testing.assert_close(features[:, 0], features[:1, 0].expand(8, -1))
             for k in range(16):
                 changed = tokens.clone()
                 changed[:, k] = 1 - changed[:, k]
                 logits2, features2 = self.model(changed, features=True)
-                torch.testing.assert_close(features2[:, :k], features[:, :k], rtol=0, atol=1e-6)
-                torch.testing.assert_close(logits2[:, :k], logits[:, :k], rtol=0, atol=1e-6)
-                self.assertGreater(float((features2[:, k] - features[:, k]).abs().max()), 1e-3)
+                torch.testing.assert_close(features2[:, :k + 1], features[:, :k + 1], rtol=0, atol=1e-6)
+                torch.testing.assert_close(logits2[:, :k + 1], logits[:, :k + 1], rtol=0, atol=1e-6)
+                if k < 15:
+                    self.assertGreater(float((features2[:, k + 1] - features[:, k + 1]).abs().max()), 1e-3)
 
     def test_features(self):
         """(n_layers + 1) d_model features: the LayerNorm-ed input of each block, then the final LayerNorm output,
@@ -205,7 +207,8 @@ class Model(unittest.TestCase):
         with torch.no_grad():
             logits, features = m(tokens, features=True)
             self.assertEqual(features.shape, (4, 16, 3 * 32))
-            x = m.embed(tokens) + m.pos_embed(torch.arange(16))
+            bos = torch.full((4, 1), m.cfg.vocab)
+            x = m.embed(torch.cat([bos, tokens[:, :-1]], 1)) + m.pos_embed(torch.arange(16))
             for i, block in enumerate(m.blocks):
                 torch.testing.assert_close(features[..., 32 * i: 32 * (i + 1)], block.ln1(x))
                 x, _ = block(x)
@@ -245,21 +248,21 @@ class Model(unittest.TestCase):
             features = model(tokens, features=True)[1]
             changed = tokens.clone()
             changed[:, 9] = 1 - changed[:, 9]
-            torch.testing.assert_close(model(changed, features=True)[1][:, :9], features[:, :9], rtol=0, atol=1e-6)
+            torch.testing.assert_close(model(changed, features=True)[1][:, :10], features[:, :10], rtol=0, atol=1e-6)
 
     def test_parameter_counts(self):
         """README: 144k parameters (Shai et al. 2024 architecture) and 20k (2 layers, d_model 32); 142k and 19k with
         RoPE."""
         count = lambda cfg: sum(p.numel() for p in Transformer(cfg).parameters())
-        self.assertEqual(count(Config()), 144_354)
-        self.assertEqual(count(Config(rope=True)), 142_306)
-        self.assertEqual(count(Config(n_layers=2, d_model=32, d_mlp=128)), 20_338)
-        self.assertEqual(count(Config(n_layers=2, d_model=32, d_mlp=128, rope=True)), 19_314)
+        self.assertEqual(count(Config()), 144_418)
+        self.assertEqual(count(Config(rope=True)), 142_370)
+        self.assertEqual(count(Config(n_layers=2, d_model=32, d_mlp=128)), 20_370)
+        self.assertEqual(count(Config(n_layers=2, d_model=32, d_mlp=128, rope=True)), 19_346)
 
 
 class BeliefModel(torch.nn.Module):
-    """Stand-in for the transformer whose features at position n are the exact belief after tokens[:, :n + 1 + lag]
-    (zero-padded to the transformer's width). With lag = 0 the probe must give R^2 = 1; lag = -1 is an off-by-one.
+    """Stand-in for the transformer whose features at position n are the exact belief after tokens[:, :n + lag]
+    (zero-padded to the transformer's width). With lag = 0 the probe must give R^2 = 1; lag = 1 is an off-by-one.
     blank = "odd", "even", "first" or "second" zeroes the features at odd or even history lengths, or in the first or
     second half of the context."""
 
@@ -268,10 +271,10 @@ class BeliefModel(torch.nn.Module):
         self.T, self.lag, self.blank, self.cfg = T, lag, blank, Config()
 
     def forward(self, tokens: torch.Tensor, features: bool = False):
-        b = mrrxor.beliefs(self.T, tokens)[:, 1 + self.lag: tokens.shape[1] + 1 + self.lag].float()
+        b = mrrxor.beliefs(self.T, tokens)[:, self.lag: tokens.shape[1] + self.lag].float()
         if self.blank:
-            positions = {"odd": slice(0, None, 2), "even": slice(1, None, 2), "first": slice(0, 16),
-                         "second": slice(16, None)}  # index 0 is history length 1
+            positions = {"odd": slice(1, None, 2), "even": slice(0, None, 2), "first": slice(0, 16),
+                         "second": slice(16, None)}  # index n is history length n
             b[:, positions[self.blank]] = 0
         padded = torch.cat([b, torch.zeros(*b.shape[:2], (self.cfg.n_layers + 1) * self.cfg.d_model - 5)], -1)
         return torch.zeros(*tokens.shape, 2), padded
@@ -328,7 +331,7 @@ class Probe(unittest.TestCase):
 
     def test_shuffled_permutes_distinct_beliefs(self):
         T = mrrxor.transition_tensor(0.0)
-        beliefs = mrrxor.beliefs(T, mrrxor.sample(T, 500, 32, torch.Generator().manual_seed(8)))[:, 1:]
+        beliefs = mrrxor.beliefs(T, mrrxor.sample(T, 500, 32, torch.Generator().manual_seed(8)))[:, :-1]
         s = probe.shuffled(beliefs, seed=0)
         rows, shuffled_rows = beliefs.flatten(0, 1).round(decimals=10), s.flatten(0, 1)
         values = torch.unique(rows, dim=0)
@@ -348,12 +351,13 @@ class Probe(unittest.TestCase):
             self.assertAlmostEqual(exact[f"r2_{weighting}"], 1.0, places=5)
             self.assertAlmostEqual(exact[f"next_r2_{weighting}"], 1.0, places=5)
             self.assertLess(exact[f"shuffled_r2_{weighting}"], 0.5)
-            self.assertTrue(all(r > 1 - 1e-5 for r in exact[f"r2_by_position_{weighting}"]))
+            self.assertIsNone(exact[f"r2_by_position_{weighting}"][0])
+            self.assertTrue(all(r > 1 - 1e-5 for r in exact[f"r2_by_position_{weighting}"][1:]))
             for split in ("parity_", "early_", "late_"):  # no history is shared between fitting and scoring
                 self.assertGreater(exact[f"{split}r2_{weighting}"], 0.999, split)
                 self.assertGreater(exact[f"{split}next_r2_{weighting}"], 0.999, split)
                 self.assertLess(exact[f"{split}shuffled_r2_{weighting}"], 0.1, split)
-        lagged = probe.probe(BeliefModel(T, lag=-1), T, count=2048)
+        lagged = probe.probe(BeliefModel(T, lag=1), T, count=2048)
         self.assertLess(lagged["r2_uniform"], 0.9)
 
     def test_held_out_positions_fit_and_score_the_stated_positions(self):
@@ -372,7 +376,7 @@ class Probe(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             run = Path(tmp) / "runs" / "L1_d16" / "eps0.05" / "s0"
             python = [sys.executable]
-            subprocess.run(python + [str(ROOT / "train.py"), "--layers", "1", "--d-model", "16", "--max-steps", "30",
+            subprocess.run(python + [str(ROOT / "train.py"), "--layers", "1", "--d-model", "16", "--steps", "30",
                                      "--warmup", "5", "--log-every", "10", "--ckpt-every", "10", "--out", str(run)],
                            check=True, capture_output=True, cwd=ROOT)
             self.assertEqual(sorted(p.name for p in run.parent.iterdir()), ["s0", "s0.pt"])
@@ -380,7 +384,7 @@ class Probe(unittest.TestCase):
                              ["step_000010.pt", "step_000020.pt", "step_000030.pt"])
             final = torch.load(f"{run}.pt", weights_only=True)
             self.assertEqual(final["step"], 30)
-            self.assertFalse(final["reached_target"])
+            self.assertTrue(np.isfinite(final["test_kl"]))
             self.assertEqual({v.device.type for v in final["model"].values()}, {"cpu"})
             for name, checkpoint in ((f"{run}.pt", "final"), (str(run), "all")):  # a run with or without .pt
                 subprocess.run(python + [str(ROOT / "probe.py"), name, "--trajectories", "256", "--checkpoint",
@@ -396,11 +400,10 @@ class Probe(unittest.TestCase):
                                      text=True, cwd=tmp).stdout
             for heading in ("### Random split", "### Odd/even split"):
                 self.assertIn(heading, summary)
-            self.assertIn("| model | ε | belief state | next-token distribution | shuffled belief state | "
+            self.assertIn("| model | ε | test KL | belief state | next-token distribution | shuffled belief state | "
                           "untrained network |", summary)
-            self.assertIn("| 1 layers, d_model 16 | 0.05 | **", summary)
-            self.assertIn("Did not reach the training-KL target: 1 layers, d_model 16, ε = 0.05 (1 of 1 seeds).",
-                          summary)
+            self.assertIn(f"| 1 layers, d_model 16 | 0.05 | {final['test_kl']:.1e} | **".replace("e-0", "e-"), summary)
+            self.assertIn("Seeds per row: 1.", summary)
 
 
 if __name__ == "__main__":

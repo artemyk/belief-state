@@ -1,7 +1,8 @@
 """The transformer of Shai et al. (2024), Appendix A.6. By default: 4 layers, d_model 64, one attention head of
 dimension 8, ReLU MLPs of width 256, pre-LayerNorm, learned positional embeddings, causal attention, no dropout.
 With rope=True, rotary position embeddings (Su et al. 2021) on the queries and keys replace the learned positional
-embeddings."""
+embeddings. The network reads a beginning-of-sequence (BOS) token, an extra row of the embedding, followed by the
+tokens, so that its outputs predict every token of a sequence, including the first."""
 from dataclasses import dataclass
 
 import torch
@@ -59,7 +60,7 @@ class Transformer(nn.Module):
     def __init__(self, cfg: Config, init_std: float = 0.1):
         super().__init__()
         self.cfg = cfg
-        self.embed = nn.Embedding(cfg.vocab, cfg.d_model)
+        self.embed = nn.Embedding(cfg.vocab + 1, cfg.d_model)  # token cfg.vocab is BOS
         self.pos_embed = None if cfg.rope else nn.Embedding(cfg.context, cfg.d_model)
         self.blocks = nn.ModuleList(Block(cfg) for _ in range(cfg.n_layers))
         self.ln_final = nn.LayerNorm(cfg.d_model)
@@ -71,11 +72,13 @@ class Transformer(nn.Module):
                 nn.init.zeros_(module.bias)
 
     def forward(self, tokens: torch.Tensor, features: bool = False):
-        """Logits (batch, length, vocab). With features=True, also the probe features
-        (batch, length, (n_layers + 1) d_model): the residual stream at every layer as the network reads it, i.e.
-        the LayerNorm-ed input of each block and the LayerNorm-ed output of the last block (the input to the
-        unembedding)."""
-        x = self.embed(tokens)
+        """Logits (batch, length, vocab): position n predicts tokens[:, n] from tokens[:, :n]. The network reads BOS
+        followed by tokens[:, :-1], so position n has seen n tokens and the last token is only a target. With
+        features=True, also the probe features (batch, length, (n_layers + 1) d_model): the residual stream at every
+        layer as the network reads it, i.e. the LayerNorm-ed input of each block and the LayerNorm-ed output of the
+        last block (the input to the unembedding)."""
+        inputs = torch.cat([torch.full_like(tokens[:, :1], self.cfg.vocab), tokens[:, :-1]], 1)
+        x = self.embed(inputs)
         if self.pos_embed is not None:
             x = x + self.pos_embed(torch.arange(tokens.shape[1], device=tokens.device))
         normalized = []

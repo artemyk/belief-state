@@ -96,16 +96,14 @@ def next_token_probabilities(T: torch.Tensor, belief: torch.Tensor) -> torch.Ten
 
 
 def optimal_predictions(T: torch.Tensor, tokens: torch.Tensor) -> torch.Tensor:
-    """Bayes-optimal distribution of the next token after each prefix (batch, length, 2): entry n is the distribution
-    of tokens[:, n + 1] given tokens[:, :n + 1], i.e. what a model should output at position n."""
-    return next_token_probabilities(T, beliefs(T, tokens)[:, 1:])
+    """Bayes-optimal distribution of each token given the ones before it (batch, length, 2): entry n is the
+    distribution of tokens[:, n] given tokens[:, :n], i.e. what the model should output at position n."""
+    return next_token_probabilities(T, beliefs(T, tokens)[:, :-1])
 
 
 def sequence_probabilities(T: torch.Tensor, tokens: torch.Tensor) -> torch.Tensor:
     """Probability of each sequence (batch,) under the stationary process, for sequences with positive probability."""
-    belief = beliefs(T, tokens)[:, :-1]
-    predicted = next_token_probabilities(T, belief).gather(-1, tokens[..., None]).squeeze(-1)
-    return predicted.prod(-1)
+    return optimal_predictions(T, tokens).gather(-1, tokens[..., None]).squeeze(-1).prod(-1)
 
 
 def kl_to_model(optimal: torch.Tensor, logits: torch.Tensor) -> float:
@@ -115,6 +113,6 @@ def kl_to_model(optimal: torch.Tensor, logits: torch.Tensor) -> float:
 
 
 def test_set(T: torch.Tensor, length: int, size: int = 4096, seed: int = 12345):
-    """A fixed held-out set of sequences and the optimal next-token distributions after each of their prefixes."""
+    """A fixed held-out set of sequences and the optimal distribution of each of their tokens given the ones before."""
     tokens = sample(T, size, length, torch.Generator().manual_seed(seed))
     return tokens, optimal_predictions(T, tokens)

@@ -1,19 +1,17 @@
-"""Train the transformer on MRRXOR until its next-token predictions are within a target KL of Bayes-optimal.
+"""Train the transformer on MRRXOR for a fixed number of steps.
 
-The loss is the usual next-token cross entropy on sampled tokens, averaged over all positions of each length-32
-input. Progress is measured by the exact training KL: the KL divergence from the Bayes-optimal next-token
-distribution (computed from the exact belief states) to the model's prediction, averaged over the positions and
-sequences of the training batches. Training stops when its mean over the last `--window` steps falls below
-`--kl-target`, or after `--max-steps`. The same KL on a fixed held-out set of 4,096 sequences (the test KL) is
-logged every `--log-every` steps, and the current weights are saved to <out>/step_<step>.pt every `--ckpt-every`
-steps, to follow training. <out>.pt holds the final weights and the training summary (steps, training and test KL,
-whether the target was reached); it is the only file of a run kept in the repository.
+The loss is the cross entropy of the model's prediction of each token of a sampled length-32 sequence, the first
+included (the model reads a BOS token first), averaged over the 32 tokens. Progress is measured by the test KL: the KL
+divergence from the Bayes-optimal next-token distribution (computed from the exact belief states) to the model's
+prediction, averaged over all tokens of a fixed held-out set of 4,096 sequences. It is logged every `--log-every`
+steps, and the current weights are saved to <out>/step_<step>.pt every `--ckpt-every` steps, to follow training.
+<out>.pt holds the final weights and the training summary (steps, test KL); it is the only file of a run kept in the
+repository.
 
 Usage: python train.py --eps 0.05 --seed 0 --out runs/L4_d64/eps0.05/s0
 """
 import argparse
 import time
-from collections import deque
 from pathlib import Path
 
 import torch
@@ -34,9 +32,7 @@ parser.add_argument("--context", type=int, default=32)
 parser.add_argument("--batch", type=int, default=512)
 parser.add_argument("--lr", type=float, default=1e-3)
 parser.add_argument("--warmup", type=int, default=1000)
-parser.add_argument("--max-steps", type=int, default=100_000, help="length of the cosine schedule and step budget")
-parser.add_argument("--kl-target", type=float, default=1e-4)
-parser.add_argument("--window", type=int, default=500)
+parser.add_argument("--steps", type=int, default=100_000, help="number of steps (and of the cosine schedule)")
 parser.add_argument("--log-every", type=int, default=1000)
 parser.add_argument("--ckpt-every", type=int, default=5000)
 parser.add_argument("--out", type=Path, required=True, help="run name, e.g. runs/L4_d64/eps0.05/s0 (no extension)")
@@ -54,7 +50,7 @@ forward = model if device.type == "cpu" else torch.compile(model)
 optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, fused=True)
 scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [
     torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1e-3, total_iters=args.warmup),
-    torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, args.max_steps - args.warmup),
+    torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, args.steps - args.warmup),
                                                eta_min=args.lr / 100),
 ], milestones=[args.warmup])
 
@@ -68,7 +64,7 @@ def test_kl() -> float:
 
 
 # Saved with every checkpoint: the settings that define the run (the architecture is in "config").
-RUN_SETTINGS = ("eps", "seed", "init_std", "context", "batch", "lr", "warmup", "max_steps", "kl_target", "window")
+RUN_SETTINGS = ("eps", "seed", "init_std", "context", "batch", "lr", "warmup", "steps")
 
 
 def save(path: Path, step: int, **summary) -> None:
@@ -76,33 +72,23 @@ def save(path: Path, step: int, **summary) -> None:
                 "model": {key: value.cpu() for key, value in model.state_dict().items()}, **summary}, path)
 
 
-recent_kl, started, step = deque(maxlen=args.window), time.time(), 0
-while step < args.max_steps:
-    tokens = mrrxor.sample(T, args.batch, args.context + 1, data_rng)
-    inputs, targets = tokens[:, :-1], tokens[:, 1:]
-    optimal = mrrxor.optimal_predictions(T, inputs)  # (batch, context, 2), aligned with the logits
-
-    logits = forward(inputs.to(device))
-    loss = F.cross_entropy(logits.flatten(0, 1), targets.to(device).flatten())
+# Nothing in the loop reads a value back from the GPU except when logging, so the CPU samples the next batch while the
+# GPU works on the current one.
+started = time.time()
+for step in range(1, args.steps + 1):
+    tokens = mrrxor.sample(T, args.batch, args.context, data_rng).to(device)
+    logits = forward(tokens)
+    loss = F.cross_entropy(logits.flatten(0, 1), tokens.flatten())
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
     scheduler.step()
-    step += 1
-
-    recent_kl.append(mrrxor.kl_to_model(optimal, logits))
-    kl = sum(recent_kl) / len(recent_kl)
-    done = len(recent_kl) == args.window and kl < args.kl_target
-    if step % args.log_every == 0 or done:
-        print(f"step {step:7d}  lr {scheduler.get_last_lr()[0]:.2e}  train KL {kl:.2e}  test KL {test_kl():.2e}"
+    if step % args.log_every == 0:
+        print(f"step {step:7d}  lr {scheduler.get_last_lr()[0]:.2e}  test KL {test_kl():.2e}"
               f"  ({step / (time.time() - started):.0f} steps/s)", flush=True)
     if step % args.ckpt_every == 0:
         save(args.out / f"step_{step:06d}.pt", step)
-    if done:
-        break
 
-reached = len(recent_kl) == args.window and kl < args.kl_target
-save(Path(f"{args.out}.pt"), step, train_kl=kl, test_kl=test_kl(), reached_target=reached,
-     seconds=time.time() - started)
-print(f"{'reached' if reached else 'did not reach'} train KL {args.kl_target:g} after {step} steps "
-      f"(train KL {kl:.2e})", flush=True)
+kl = test_kl()
+save(Path(f"{args.out}.pt"), args.steps, test_kl=kl, seconds=time.time() - started)
+print(f"trained for {args.steps} steps, test KL {kl:.2e}", flush=True)
