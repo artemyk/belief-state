@@ -6,181 +6,122 @@ A small, self-contained PyTorch implementation of a transformer trained on the M
 
 ## Results
 
-We evaluate four models: a *large* one with the architecture of Shai et al. (2024), 4 layers and d_model 64, a *small* one with 2 layers and d_model 32, and both with rotary position embeddings (*RoPE*) instead of learned ones. Each is trained with 5 seeds for 100,000 steps, for ε = 0.05 and 0, and every entry is the mean ± standard deviation over the seeds. The *test KL* is the KL divergence from the Bayes-optimal next-token distribution to the model's at the end of training.
+We evaluate four models: a *large* one with the architecture of Shai et al. (2024), 4 layers and d_model 64, a *small* one with 2 layers and d_model 32, and both with rotary position embeddings (*RoPE*) instead of learned ones. Each is trained with 5 seeds for 100,000 steps, for ε = 0.05 and 0.
 
-The other entries are held-out R² values of linear probes from the residual stream. The main number, in bold, is for the belief state: the posterior over the five hidden states given the history. Three controls use the same features, fit, and held-out rows:
+For each ε, the first table gives the *test KL*, the KL divergence from the Bayes-optimal next-token distribution to the model's at the end of training, and the held-out R² of a linear probe from the residual stream to the belief state, the posterior over the five hidden states given the history. The probe is scored on four splits of its rows:
+
+- **Random:** fitted on all positions of 80% of the trajectories and scored on all positions of the other 20%.
+- **Odd/even:** fitted on the odd positions (history lengths 1, 3, …, 31) of the training trajectories and scored on the even positions (0, 2, …, 30) of the test trajectories. No history is then shared between fitting and scoring, and the probe has to carry over to positions it has not seen.
+- **1st → 2nd half:** fitted on history lengths 0–15 and scored on lengths 16–31, so that the probe has to carry over to positions farther from those it was fitted on. **2nd → 1st half** is the reverse.
+
+The second table gives three controls for the random split, which use the same features, fit, and held-out rows; those for the other splits are collapsed below it:
 
 - **Next-token distribution:** the target is the Bayes-optimal next-token distribution, which the network is trained to output.
 - **Shuffled belief state:** the distinct belief states are randomly permuted among themselves. Histories with the same belief still share a target, but the targets no longer reflect the geometry of the beliefs, so this measures the R² the probe gets for an arbitrary function of the belief. For ε = 0, there are only 36 distinct beliefs and the network separates them, so with the random split any relabeling of them is about as decodable as the beliefs themselves.
 - **Untrained network:** the belief-state probe on the network at initialization.
 
-The tables shown below weight histories *uniformly*: every sequence with positive probability counts equally. The collapsed tables use *process* weighting: trajectories are sampled from the process, so typical histories dominate.
+Entries are means over the seeds, with the standard deviation for the belief state. The tables weight histories *uniformly*: every sequence with positive probability counts equally. The collapsed tables for ε = 0.05 use *process* weighting: trajectories are sampled from the process, so typical histories dominate. For ε = 0, the two weightings give nearly the same results.
 
-### Random split
+### ε = 0.05
 
-The probe is fitted on all positions of 80% of the trajectories and scored on all positions of the other 20%.
+<!-- results eps0.05 -->
 
-<!-- results random -->
+| model | test KL | random | odd/even | 1st → 2nd half | 2nd → 1st half |
+|---|---:|---:|---:|---:|---:|
+| large | 6.1e-5 | 0.93 ± 0.03 | 0.83 ± 0.04 | 0.71 ± 0.12 | 0.51 ± 0.33 |
+| small | 8.9e-4 | 0.69 ± 0.10 | 0.60 ± 0.10 | 0.48 ± 0.08 | 0.48 ± 0.04 |
+| large, RoPE | 9.5e-5 | 0.98 ± 0.00 | 0.95 ± 0.02 | 0.90 ± 0.05 | -546.25 ± 287.63 |
+| small, RoPE | 1.9e-3 | 0.74 ± 0.04 | 0.64 ± 0.09 | 0.61 ± 0.05 | -192.55 ± 121.97 |
 
-| learned positions | ε | test KL | belief state | next-token distribution | shuffled belief state | untrained network |
-|---|---:|---:|---:|---:|---:|---:|
-| large | 0.05 | 6.1e-5 ± 3.0e-5 | **0.93 ± 0.03** | 1.00 ± 0.00 | 0.13 ± 0.01 | 0.24 ± 0.01 |
-| large | 0 | 1.1e-6 ± 1.7e-7 | **0.88 ± 0.05** | 1.00 ± 0.00 | 0.83 ± 0.04 | 0.12 ± 0.00 |
-| small | 0.05 | 8.9e-4 ± 8.0e-4 | **0.69 ± 0.10** | 0.97 ± 0.01 | 0.07 ± 0.01 | 0.20 ± 0.00 |
-| small | 0 | 2.0e-4 ± 3.5e-4 | **0.54 ± 0.09** | 0.94 ± 0.04 | 0.48 ± 0.06 | 0.10 ± 0.00 |
-
-| RoPE | ε | test KL | belief state | next-token distribution | shuffled belief state | untrained network |
-|---|---:|---:|---:|---:|---:|---:|
-| large | 0.05 | 9.5e-5 ± 2.5e-5 | **0.98 ± 0.00** | 1.00 ± 0.00 | 0.15 ± 0.00 | 0.32 ± 0.01 |
-| large | 0 | 4.5e-6 ± 2.8e-6 | **0.93 ± 0.03** | 1.00 ± 0.00 | 0.83 ± 0.03 | 0.19 ± 0.01 |
-| small | 0.05 | 1.9e-3 ± 4.5e-4 | **0.74 ± 0.04** | 0.98 ± 0.00 | 0.07 ± 0.01 | 0.26 ± 0.01 |
-| small | 0 | 1.6e-3 ± 3.0e-4 | **0.65 ± 0.03** | 0.92 ± 0.01 | 0.52 ± 0.02 | 0.14 ± 0.01 |
+| model | next-token distribution | shuffled belief state | untrained network |
+|---|---:|---:|---:|
+| large | 1.00 | 0.13 | 0.24 |
+| small | 0.97 | 0.07 | 0.20 |
+| large, RoPE | 1.00 | 0.15 | 0.32 |
+| small, RoPE | 0.98 | 0.07 | 0.26 |
 
 <details>
 <summary>Process weighting</summary>
 
-| learned positions | ε | test KL | belief state | next-token distribution | shuffled belief state | untrained network |
-|---|---:|---:|---:|---:|---:|---:|
-| large | 0.05 | 6.1e-5 ± 3.0e-5 | **0.92 ± 0.04** | 1.00 ± 0.00 | 0.16 ± 0.00 | 0.19 ± 0.00 |
-| large | 0 | 1.1e-6 ± 1.7e-7 | **0.88 ± 0.05** | 1.00 ± 0.00 | 0.83 ± 0.04 | 0.12 ± 0.00 |
-| small | 0.05 | 8.9e-4 ± 8.0e-4 | **0.65 ± 0.11** | 0.98 ± 0.01 | 0.11 ± 0.01 | 0.16 ± 0.00 |
-| small | 0 | 2.0e-4 ± 3.5e-4 | **0.54 ± 0.09** | 0.94 ± 0.04 | 0.48 ± 0.06 | 0.10 ± 0.00 |
+| model | test KL | random | odd/even | 1st → 2nd half | 2nd → 1st half |
+|---|---:|---:|---:|---:|---:|
+| large | 6.1e-5 | 0.92 ± 0.04 | 0.81 ± 0.06 | 0.67 ± 0.15 | 0.41 ± 0.52 |
+| small | 8.9e-4 | 0.65 ± 0.11 | 0.55 ± 0.11 | 0.40 ± 0.08 | 0.47 ± 0.05 |
+| large, RoPE | 9.5e-5 | 0.97 ± 0.01 | 0.94 ± 0.03 | 0.87 ± 0.08 | -590.84 ± 327.79 |
+| small, RoPE | 1.9e-3 | 0.70 ± 0.03 | 0.61 ± 0.06 | 0.53 ± 0.04 | -265.36 ± 229.37 |
 
-| RoPE | ε | test KL | belief state | next-token distribution | shuffled belief state | untrained network |
-|---|---:|---:|---:|---:|---:|---:|
-| large | 0.05 | 9.5e-5 ± 2.5e-5 | **0.97 ± 0.01** | 1.00 ± 0.00 | 0.17 ± 0.01 | 0.27 ± 0.00 |
-| large | 0 | 4.5e-6 ± 2.8e-6 | **0.93 ± 0.03** | 1.00 ± 0.00 | 0.83 ± 0.03 | 0.19 ± 0.01 |
-| small | 0.05 | 1.9e-3 ± 4.5e-4 | **0.70 ± 0.03** | 0.97 ± 0.01 | 0.11 ± 0.01 | 0.21 ± 0.01 |
-| small | 0 | 1.6e-3 ± 3.0e-4 | **0.65 ± 0.03** | 0.92 ± 0.01 | 0.52 ± 0.02 | 0.14 ± 0.01 |
+| model | next-token distribution | shuffled belief state | untrained network |
+|---|---:|---:|---:|
+| large | 1.00 | 0.16 | 0.19 |
+| small | 0.98 | 0.11 | 0.16 |
+| large, RoPE | 1.00 | 0.17 | 0.27 |
+| small, RoPE | 0.97 | 0.11 | 0.21 |
+
+</details>
+
+<details>
+<summary>Controls for the held-out splits</summary>
+
+| split | model | next-token distribution | shuffled belief state | untrained network |
+|---|---|---:|---:|---:|
+| odd/even | large | 1.00 | -0.02 | 0.16 |
+| odd/even | small | 0.97 | -0.01 | 0.16 |
+| odd/even | large, RoPE | 1.00 | -0.01 | -0.22 |
+| odd/even | small, RoPE | 0.97 | 0.00 | -1.98 |
+| 1st → 2nd half | large | 0.99 | -0.01 | 0.15 |
+| 1st → 2nd half | small | 0.96 | -0.01 | 0.15 |
+| 1st → 2nd half | large, RoPE | 1.00 | -0.01 | 0.16 |
+| 1st → 2nd half | small, RoPE | 0.97 | 0.00 | 0.16 |
+| 2nd → 1st half | large | 0.99 | 0.00 | 0.18 |
+| 2nd → 1st half | small | 0.98 | 0.00 | 0.17 |
+| 2nd → 1st half | large, RoPE | -25.10 | 0.00 | -158.94 |
+| 2nd → 1st half | small, RoPE | -6.10 | 0.00 | -43.35 |
 
 </details>
 
 <!-- /results -->
 
-### Odd/even split
+### ε = 0
 
-The probe is fitted on the odd positions (history lengths 1, 3, …, 31) of the training trajectories and scored on the even positions (0, 2, …, 30) of the test trajectories. No history is then shared between fitting and scoring, and the probe has to carry over to positions it has not seen.
+<!-- results eps0 -->
 
-<!-- results parity -->
+| model | test KL | random | odd/even | 1st → 2nd half | 2nd → 1st half |
+|---|---:|---:|---:|---:|---:|
+| large | 1.1e-6 | 0.88 ± 0.05 | 0.69 ± 0.09 | 0.56 ± 0.13 | 0.17 ± 0.20 |
+| small | 2.0e-4 | 0.54 ± 0.09 | 0.45 ± 0.11 | 0.35 ± 0.06 | -0.36 ± 1.49 |
+| large, RoPE | 4.5e-6 | 0.93 ± 0.03 | 0.85 ± 0.04 | 0.73 ± 0.09 | -230.55 ± 232.43 |
+| small, RoPE | 1.6e-3 | 0.65 ± 0.03 | 0.60 ± 0.04 | 0.47 ± 0.06 | -103.07 ± 143.37 |
 
-| learned positions | ε | test KL | belief state | next-token distribution | shuffled belief state | untrained network |
-|---|---:|---:|---:|---:|---:|---:|
-| large | 0.05 | 6.1e-5 ± 3.0e-5 | **0.83 ± 0.04** | 1.00 ± 0.00 | -0.02 ± 0.00 | 0.16 ± 0.00 |
-| large | 0 | 1.1e-6 ± 1.7e-7 | **0.69 ± 0.09** | 0.98 ± 0.01 | 0.44 ± 0.07 | 0.08 ± 0.00 |
-| small | 0.05 | 8.9e-4 ± 8.0e-4 | **0.60 ± 0.10** | 0.97 ± 0.01 | -0.01 ± 0.00 | 0.16 ± 0.01 |
-| small | 0 | 2.0e-4 ± 3.5e-4 | **0.45 ± 0.11** | 0.92 ± 0.04 | 0.29 ± 0.04 | 0.08 ± 0.00 |
-
-| RoPE | ε | test KL | belief state | next-token distribution | shuffled belief state | untrained network |
-|---|---:|---:|---:|---:|---:|---:|
-| large | 0.05 | 9.5e-5 ± 2.5e-5 | **0.95 ± 0.02** | 1.00 ± 0.00 | -0.01 ± 0.00 | -0.22 ± 0.81 |
-| large | 0 | 4.5e-6 ± 2.8e-6 | **0.85 ± 0.04** | 0.99 ± 0.01 | 0.51 ± 0.03 | 0.08 ± 0.02 |
-| small | 0.05 | 1.9e-3 ± 4.5e-4 | **0.64 ± 0.09** | 0.97 ± 0.01 | 0.00 ± 0.00 | -1.98 ± 4.07 |
-| small | 0 | 1.6e-3 ± 3.0e-4 | **0.60 ± 0.04** | 0.91 ± 0.01 | 0.20 ± 0.24 | -1.19 ± 2.45 |
+| model | next-token distribution | shuffled belief state | untrained network |
+|---|---:|---:|---:|
+| large | 1.00 | 0.83 | 0.12 |
+| small | 0.94 | 0.48 | 0.10 |
+| large, RoPE | 1.00 | 0.83 | 0.19 |
+| small, RoPE | 0.92 | 0.52 | 0.14 |
 
 <details>
-<summary>Process weighting</summary>
+<summary>Controls for the held-out splits</summary>
 
-| learned positions | ε | test KL | belief state | next-token distribution | shuffled belief state | untrained network |
-|---|---:|---:|---:|---:|---:|---:|
-| large | 0.05 | 6.1e-5 ± 3.0e-5 | **0.81 ± 0.06** | 1.00 ± 0.00 | -0.04 ± 0.03 | 0.14 ± 0.00 |
-| large | 0 | 1.1e-6 ± 1.7e-7 | **0.69 ± 0.09** | 0.98 ± 0.01 | 0.44 ± 0.07 | 0.08 ± 0.00 |
-| small | 0.05 | 8.9e-4 ± 8.0e-4 | **0.55 ± 0.11** | 0.98 ± 0.01 | -0.01 ± 0.02 | 0.14 ± 0.00 |
-| small | 0 | 2.0e-4 ± 3.5e-4 | **0.45 ± 0.11** | 0.92 ± 0.04 | 0.29 ± 0.04 | 0.08 ± 0.00 |
-
-| RoPE | ε | test KL | belief state | next-token distribution | shuffled belief state | untrained network |
-|---|---:|---:|---:|---:|---:|---:|
-| large | 0.05 | 9.5e-5 ± 2.5e-5 | **0.94 ± 0.03** | 1.00 ± 0.00 | -0.08 ± 0.03 | -0.20 ± 0.78 |
-| large | 0 | 4.5e-6 ± 2.8e-6 | **0.85 ± 0.04** | 0.99 ± 0.01 | 0.51 ± 0.03 | 0.08 ± 0.02 |
-| small | 0.05 | 1.9e-3 ± 4.5e-4 | **0.61 ± 0.06** | 0.97 ± 0.00 | -0.05 ± 0.06 | -1.44 ± 3.00 |
-| small | 0 | 1.6e-3 ± 3.0e-4 | **0.60 ± 0.04** | 0.91 ± 0.01 | 0.20 ± 0.24 | -1.19 ± 2.46 |
+| split | model | next-token distribution | shuffled belief state | untrained network |
+|---|---|---:|---:|---:|
+| odd/even | large | 0.98 | 0.44 | 0.08 |
+| odd/even | small | 0.92 | 0.29 | 0.08 |
+| odd/even | large, RoPE | 0.99 | 0.51 | 0.08 |
+| odd/even | small, RoPE | 0.91 | 0.20 | -1.19 |
+| 1st → 2nd half | large | 0.98 | 0.54 | 0.07 |
+| 1st → 2nd half | small | 0.95 | 0.37 | 0.07 |
+| 1st → 2nd half | large, RoPE | 0.99 | 0.59 | 0.07 |
+| 1st → 2nd half | small, RoPE | 0.92 | 0.41 | 0.07 |
+| 2nd → 1st half | large | 0.92 | 0.13 | 0.11 |
+| 2nd → 1st half | small | 0.83 | -0.10 | 0.10 |
+| 2nd → 1st half | large, RoPE | -5.83 | -162.56 | -126.47 |
+| 2nd → 1st half | small, RoPE | -3.52 | -42.15 | -31.79 |
 
 </details>
 
 <!-- /results -->
 
-### Halves split
-
-The probe is fitted on one half of the positions of the training trajectories and scored on the other half of the test trajectories, so it has to carry over to positions farther from those it was fitted on.
-
-Fitted on history lengths 0–15, scored on lengths 16–31:
-
-<!-- results early -->
-
-| learned positions | ε | test KL | belief state | next-token distribution | shuffled belief state | untrained network |
-|---|---:|---:|---:|---:|---:|---:|
-| large | 0.05 | 6.1e-5 ± 3.0e-5 | **0.71 ± 0.12** | 0.99 ± 0.00 | -0.01 ± 0.00 | 0.15 ± 0.00 |
-| large | 0 | 1.1e-6 ± 1.7e-7 | **0.56 ± 0.13** | 0.98 ± 0.01 | 0.54 ± 0.02 | 0.07 ± 0.00 |
-| small | 0.05 | 8.9e-4 ± 8.0e-4 | **0.48 ± 0.08** | 0.96 ± 0.02 | -0.01 ± 0.00 | 0.15 ± 0.00 |
-| small | 0 | 2.0e-4 ± 3.5e-4 | **0.35 ± 0.06** | 0.95 ± 0.03 | 0.37 ± 0.02 | 0.07 ± 0.00 |
-
-| RoPE | ε | test KL | belief state | next-token distribution | shuffled belief state | untrained network |
-|---|---:|---:|---:|---:|---:|---:|
-| large | 0.05 | 9.5e-5 ± 2.5e-5 | **0.90 ± 0.05** | 1.00 ± 0.00 | -0.01 ± 0.00 | 0.16 ± 0.00 |
-| large | 0 | 4.5e-6 ± 2.8e-6 | **0.73 ± 0.09** | 0.99 ± 0.01 | 0.59 ± 0.10 | 0.07 ± 0.00 |
-| small | 0.05 | 1.9e-3 ± 4.5e-4 | **0.61 ± 0.05** | 0.97 ± 0.00 | 0.00 ± 0.00 | 0.16 ± 0.00 |
-| small | 0 | 1.6e-3 ± 3.0e-4 | **0.47 ± 0.06** | 0.92 ± 0.01 | 0.41 ± 0.03 | 0.07 ± 0.00 |
-
-<details>
-<summary>Process weighting</summary>
-
-| learned positions | ε | test KL | belief state | next-token distribution | shuffled belief state | untrained network |
-|---|---:|---:|---:|---:|---:|---:|
-| large | 0.05 | 6.1e-5 ± 3.0e-5 | **0.67 ± 0.15** | 0.99 ± 0.00 | -0.01 ± 0.01 | 0.12 ± 0.00 |
-| large | 0 | 1.1e-6 ± 1.7e-7 | **0.56 ± 0.13** | 0.98 ± 0.01 | 0.54 ± 0.02 | 0.07 ± 0.00 |
-| small | 0.05 | 8.9e-4 ± 8.0e-4 | **0.40 ± 0.08** | 0.98 ± 0.02 | -0.02 ± 0.01 | 0.12 ± 0.00 |
-| small | 0 | 2.0e-4 ± 3.5e-4 | **0.35 ± 0.06** | 0.95 ± 0.03 | 0.37 ± 0.02 | 0.07 ± 0.00 |
-
-| RoPE | ε | test KL | belief state | next-token distribution | shuffled belief state | untrained network |
-|---|---:|---:|---:|---:|---:|---:|
-| large | 0.05 | 9.5e-5 ± 2.5e-5 | **0.87 ± 0.08** | 1.00 ± 0.00 | -0.01 ± 0.00 | 0.13 ± 0.00 |
-| large | 0 | 4.5e-6 ± 2.8e-6 | **0.73 ± 0.09** | 0.99 ± 0.01 | 0.59 ± 0.10 | 0.07 ± 0.00 |
-| small | 0.05 | 1.9e-3 ± 4.5e-4 | **0.53 ± 0.04** | 0.96 ± 0.01 | -0.01 ± 0.00 | 0.13 ± 0.00 |
-| small | 0 | 1.6e-3 ± 3.0e-4 | **0.47 ± 0.06** | 0.92 ± 0.01 | 0.41 ± 0.03 | 0.07 ± 0.00 |
-
-</details>
-
-<!-- /results -->
-
-Fitted on history lengths 16–31, scored on lengths 0–15:
-
-<!-- results late -->
-
-| learned positions | ε | test KL | belief state | next-token distribution | shuffled belief state | untrained network |
-|---|---:|---:|---:|---:|---:|---:|
-| large | 0.05 | 6.1e-5 ± 3.0e-5 | **0.51 ± 0.33** | 0.99 ± 0.00 | 0.00 ± 0.00 | 0.18 ± 0.01 |
-| large | 0 | 1.1e-6 ± 1.7e-7 | **0.17 ± 0.20** | 0.92 ± 0.04 | 0.13 ± 0.14 | 0.11 ± 0.00 |
-| small | 0.05 | 8.9e-4 ± 8.0e-4 | **0.48 ± 0.04** | 0.98 ± 0.01 | 0.00 ± 0.00 | 0.17 ± 0.01 |
-| small | 0 | 2.0e-4 ± 3.5e-4 | **-0.36 ± 1.49** | 0.83 ± 0.02 | -0.10 ± 0.46 | 0.10 ± 0.00 |
-
-| RoPE | ε | test KL | belief state | next-token distribution | shuffled belief state | untrained network |
-|---|---:|---:|---:|---:|---:|---:|
-| large | 0.05 | 9.5e-5 ± 2.5e-5 | **-546.25 ± 287.63** | -25.10 ± 20.89 | 0.00 ± 0.00 | -158.94 ± 172.34 |
-| large | 0 | 4.5e-6 ± 2.8e-6 | **-230.55 ± 232.43** | -5.83 ± 10.57 | -162.56 ± 173.19 | -126.47 ± 167.96 |
-| small | 0.05 | 1.9e-3 ± 4.5e-4 | **-192.55 ± 121.97** | -6.10 ± 3.69 | 0.00 ± 0.00 | -43.35 ± 48.41 |
-| small | 0 | 1.6e-3 ± 3.0e-4 | **-103.07 ± 143.37** | -3.52 ± 6.67 | -42.15 ± 65.40 | -31.79 ± 40.27 |
-
-<details>
-<summary>Process weighting</summary>
-
-| learned positions | ε | test KL | belief state | next-token distribution | shuffled belief state | untrained network |
-|---|---:|---:|---:|---:|---:|---:|
-| large | 0.05 | 6.1e-5 ± 3.0e-5 | **0.41 ± 0.52** | 0.99 ± 0.00 | -0.02 ± 0.00 | 0.17 ± 0.00 |
-| large | 0 | 1.1e-6 ± 1.7e-7 | **0.17 ± 0.20** | 0.92 ± 0.04 | 0.13 ± 0.14 | 0.11 ± 0.00 |
-| small | 0.05 | 8.9e-4 ± 8.0e-4 | **0.47 ± 0.05** | 0.98 ± 0.01 | -0.02 ± 0.00 | 0.16 ± 0.01 |
-| small | 0 | 2.0e-4 ± 3.5e-4 | **-0.36 ± 1.49** | 0.83 ± 0.02 | -0.10 ± 0.46 | 0.10 ± 0.00 |
-
-| RoPE | ε | test KL | belief state | next-token distribution | shuffled belief state | untrained network |
-|---|---:|---:|---:|---:|---:|---:|
-| large | 0.05 | 9.5e-5 ± 2.5e-5 | **-590.84 ± 327.79** | -13.72 ± 3.12 | -0.02 ± 0.00 | -189.28 ± 282.79 |
-| large | 0 | 4.5e-6 ± 2.8e-6 | **-230.27 ± 232.45** | -6.05 ± 10.89 | -167.92 ± 177.63 | -126.09 ± 167.49 |
-| small | 0.05 | 1.9e-3 ± 4.5e-4 | **-265.36 ± 229.37** | -1.42 ± 3.26 | -0.02 ± 0.00 | -27.94 ± 24.71 |
-| small | 0 | 1.6e-3 ± 3.0e-4 | **-102.90 ± 142.99** | -3.50 ± 6.64 | -42.13 ± 65.37 | -31.90 ± 40.45 |
-
-</details>
-
-<!-- /results -->
-
-This direction fails for the RoPE models. Their features change mostly over the first few tokens and, in most runs, little after about eight, so a probe fitted on lengths 16–31 extrapolates far outside its range at lengths below about six, where almost all of its error arises.
+The second-half-to-first-half split fails for the RoPE models. Their features change mostly over the first few tokens and, in most runs, little after about eight, so a probe fitted on lengths 16–31 extrapolates far outside its range at lengths below about six, where almost all of its error arises.
 
 ## Setup
 

@@ -398,11 +398,11 @@ class Probe(unittest.TestCase):
             self.assertEqual(len(list(run.glob("probe_step_*.json"))), 3)
             summary = subprocess.run(python + [str(ROOT / "summarize.py")], check=True, capture_output=True,
                                      text=True, cwd=tmp).stdout
-            for heading in ("### Random split", "### Odd/even split"):
-                self.assertIn(heading, summary)
-            self.assertIn("| learned positions | ε | test KL | belief state | next-token distribution | "
-                          "shuffled belief state | untrained network |", summary)
-            self.assertIn(f"| 1 layers, d_model 16 | 0.05 | {final['test_kl']:.1e} | **".replace("e-0", "e-"), summary)
+            self.assertIn("### ε = 0.05", summary)
+            self.assertIn("| model | test KL | random | odd/even | 1st → 2nd half | 2nd → 1st half |", summary)
+            self.assertIn(f"| 1 layers, d_model 16 | {final['test_kl']:.1e} | ".replace("e-0", "e-"), summary)
+            self.assertIn("| model | next-token distribution | shuffled belief state | untrained network |", summary)
+            self.assertIn("<summary>Process weighting</summary>", summary)
             self.assertIn("Seeds per row: 1.", summary)
 
 
