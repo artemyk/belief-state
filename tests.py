@@ -400,8 +400,8 @@ class Probe(unittest.TestCase):
                                      text=True, cwd=tmp).stdout
             for heading in ("### Random split", "### Odd/even split"):
                 self.assertIn(heading, summary)
-            self.assertIn("| model | ε | test KL | belief state | next-token distribution | shuffled belief state | "
-                          "untrained network |", summary)
+            self.assertIn("| learned positions | ε | test KL | belief state | next-token distribution | "
+                          "shuffled belief state | untrained network |", summary)
             self.assertIn(f"| 1 layers, d_model 16 | 0.05 | {final['test_kl']:.1e} | **".replace("e-0", "e-"), summary)
             self.assertIn("Seeds per row: 1.", summary)
 
