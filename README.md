@@ -133,7 +133,9 @@ Entries are means over the seeds, with the standard deviation for the belief sta
 
 <!-- /results -->
 
-Without absolute position, the RoPE models predict less well at the start of a sequence: the first five tokens account for 80–85% of the large RoPE model's test KL for ε = 0.05, and 96–97% for ε = 0 (the small RoPE model falls short at every length). For the RoPE models, cross-validation chooses almost no ridge penalty for the second-half-to-first-half split, and for ε = 0 that probe fails in one seed of the large model (R² = −16) and two of the small one (−4.4 and −1.0); the other seeds give 0.19–0.74.
+Without absolute position, the RoPE models predict less well at the start of a sequence: the first five tokens account for 80–85% of the large RoPE model's test KL for ε = 0.05, and 96–97% for ε = 0 (the small RoPE model falls short at every length).
+
+For ε = 0, the second-half-to-first-half split asks the probe to carry over to beliefs it has hardly seen. RRXOR synchronizes: after a few tokens the history usually determines the hidden state, and the mean belief entropy falls from 1.33 nats after one token to 0.05 after 16. The beliefs at the start of a sequence are therefore rare at its end: 73% of the rows at lengths 1–5 have beliefs that make up less than 0.1% of the rows at lengths 16–31. With ε = 0.05, mixing keeps the beliefs uncertain throughout (mean entropy 0.82 nats from length 8 on), and the two halves overlap. All four models score lower on this split for ε = 0. For the RoPE models, whose features hardly change from one block of late positions to the next, cross-validation chooses almost no ridge penalty, and the probe fails in one seed of the large model (R² = −16) and two of the small one (−4.4 and −1.0); the other seeds give 0.19–0.74.
 
 ## Setup
 
