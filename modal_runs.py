@@ -1,16 +1,18 @@
 """Train and probe runs on Modal (modal.com) GPUs instead of locally.
 
-Each container trains a group of runs concurrently on one GPU (one run uses a small fraction of it), then probes them
-on the CPU. Runs are written to the Modal volume belief-state-runs under <tag>/runs/<model>/eps<eps>/s<seed>: the final
-checkpoint (.pt), the training log (.log) and the probe results (.json), as run_sweep.sh writes them locally; no
-intermediate checkpoints. Copy them back with
-  modal volume get belief-state-runs <tag>/runs .
+Each container trains a group of runs on one GPU, then probes them on the CPU. By default a group is a single run:
+on an L4 a large run takes about 180 steps/s alone, and four concurrent runs about 40 steps/s each, since processes
+take turns on the GPU rather than overlap. Runs are written to the Modal volume belief-state-runs under
+<tag>/runs/<model>/eps<eps>/s<seed>: the final checkpoint (.pt), the training log (.log) and the probe results (.json),
+as run_sweep.sh writes them locally; no intermediate checkpoints. Copy them back with
+  modal volume get --force belief-state-runs <tag>/runs .    # --force: overwrite existing files in runs/
 and run summarize.py.
 
 Usage:
   modal run modal_runs.py::benchmark --gpu T4     # a few thousand steps, 1 and 4 runs per GPU, to time a step
   modal run modal_runs.py::main                   # all four models, eps 0.05 and 0, seeds 0-4
   modal run modal_runs.py::main --seeds 0         # options: --seeds, --per-gpu, --gpu, --steps, --tag
+The Starter plan runs at most 10 GPUs at a time; further groups wait for a free one.
 """
 import subprocess
 import time
@@ -33,7 +35,7 @@ def run_name(layers: int, d_model: int, rope: bool, eps: float, seed: int) -> st
     return f"L{layers}_d{d_model}{'_rope' if rope else ''}/eps{eps:g}/s{seed}"
 
 
-@app.function(image=image, gpu="L4", cpu=8, volumes={"/vol": volume}, timeout=4 * 3600)
+@app.function(image=image, gpu="L4", cpu=4, volumes={"/vol": volume}, timeout=4 * 3600)
 def train_group(jobs: list[tuple], steps: int, tag: str, tail: int = 1) -> list[str]:
     """Train the runs jobs = [(layers, d_model, rope, eps, seed), ...] concurrently, then probe them. Returns the last
     tail log lines of each run and the wall time."""
@@ -62,7 +64,7 @@ def train_group(jobs: list[tuple], steps: int, tag: str, tail: int = 1) -> list[
 
 
 @app.local_entrypoint()
-def main(seeds: str = "0,1,2,3,4", per_gpu: int = 4, gpu: str = "L4", steps: int = 100_000,
+def main(seeds: str = "0,1,2,3,4", per_gpu: int = 1, gpu: str = "L4", steps: int = 100_000,
          tag: str = "masked_bos"):
     """Every model, eps 0.05 and 0, and the given seeds, in groups of per_gpu runs; each group mixes large and small
     runs, so that the groups finish at about the same time."""
