@@ -3,26 +3,27 @@
 As in Shai et al. (2024), one linear probe is shared by all positions. We draw trajectories of length 32 (the
 model's context), run the model on each, and take the activations at every position: the LayerNorm-ed input of each
 block and the LayerNorm-ed output of the last block ((n_layers + 1) x d_model features, 5 x 64 = 320 by default).
-The target at position n is the exact belief state after the first n tokens, n = 0, ..., 31; position 0 reads only
-the BOS token, and its belief is the stationary distribution in every trajectory. The trajectories are split 80/20, and
+The target at position n is the exact belief state after the first n tokens, n = 1, ..., 31. Position 0, which reads
+only the BOS token, is not probed: it has no history, and its belief is the stationary distribution in every
+trajectory. The trajectories are split 80/20, and
 the probe is scored with
 R^2 = 1 - weighted sum of squared errors / weighted sum of squared deviations from the weighted mean, pooled over
 the target's coordinates. Two splits of the rows:
   random split    an affine least-squares probe fitted on all positions of the training trajectories and scored on
-                  all positions of the test trajectories (in the results also for each position separately, except
-                  position 0, where every trajectory has the same belief and R^2 is undefined)
+                  all positions of the test trajectories (in the results also for each position separately)
   held-out positions  fitted on some positions of the training trajectories and scored on the other positions of
                   the test trajectories, so that no history is shared and the probe must carry over to positions it
                   has not seen:
                     parity_  fitted on the odd positions (history lengths 1, 3, ..., 31), scored on the even ones
-                             (0, 2, ..., 30)
-                    early_   fitted on the first half (lengths 0-15), scored on the second half (16-31)
+                             (2, 4, ..., 30)
+                    early_   fitted on the first half (lengths 1-15), scored on the second half (16-31)
                     late_    fitted on the second half, scored on the first half
                   Least squares extrapolates badly to unseen positions, so these probes are ridge regressions. The
                   penalty is alpha times the mean eigenvalue of the weighted feature covariance, with alpha chosen
                   from ALPHAS separately for each target, by leave-one-group-out cross-validation over four groups of
                   fitting positions of the training trajectories: {1, 9, 17, 25}, {3, 11, 19, 27}, ... for parity_,
-                  and four contiguous blocks of four positions for the halves (keys <split>*alpha_*).
+                  and four contiguous blocks of up to four positions for the halves ({1, 2, 3}, {4, ..., 7}, ... and
+                  {16, ..., 19}, ...) (keys <split>*alpha_*).
 
 Histories are weighted in two ways, through the trajectory sample (used for both fitting and scoring):
   process  trajectories sampled from the process
@@ -37,7 +38,7 @@ Two controls use the same features and splits (one solve fits all targets):
   shuffled_  the belief states with the distinct beliefs randomly permuted among themselves: histories that share a
              belief still share a target, but the targets no longer reflect the geometry of the beliefs. This measures
              how much R^2 the probe gets for an arbitrary function of the belief: for eps > 0 mostly at short prefixes
-             that occur in both the training and test trajectories, for eps = 0 because the network separates the 36
+             that occur in both the training and test trajectories, for eps = 0 because the network separates the 35
              distinct beliefs.
 
 Also reports the test KL of the checkpoint: the mean KL divergence from the Bayes-optimal next-token distribution
@@ -128,25 +129,26 @@ def probe(model: Transformer, T: torch.Tensor, count: int = 8192, test_fraction:
         tokens, weights = trajectories(T, context, weighting, count, seed)
         with torch.no_grad():
             features = torch.cat([model(chunk, features=True)[1] for chunk in tokens.split(1024)]).double()
-        beliefs = mrrxor.beliefs(T, tokens)[:, :-1]  # position n: belief after n tokens, (count, length, 5)
+        features = features[:, 1:]  # history lengths 1, ..., context - 1
+        beliefs = mrrxor.beliefs(T, tokens)[:, 1:-1]  # belief after n tokens, n = 1, ..., context - 1
+        lengths = torch.arange(1, context)
         test = split(count, test_fraction, seed)
-        row_weights = weights.double()[:, None].expand(-1, context)
+        row_weights = weights.double()[:, None].expand(-1, len(lengths))
         targets = {"": beliefs, "next_": mrrxor.next_token_probabilities(T, beliefs),
                    "shuffled_": shuffled(beliefs, seed)}
         stacked = torch.cat(list(targets.values()), -1)
         predict = weighted_fit(features[~test].flatten(0, 1), stacked[~test].flatten(0, 1),
                                row_weights[~test].flatten())
-        predictions = predict(features[test].flatten(0, 1)).view(int(test.sum()), context, -1)
+        predictions = predict(features[test].flatten(0, 1)).view(int(test.sum()), len(lengths), -1)
         for (prefix, target), prediction in zip(targets.items(),
                                                 predictions.split([t.shape[-1] for t in targets.values()], -1)):
             out[f"{prefix}r2_{weighting}"] = weighted_r2(target[test].flatten(0, 1), prediction.flatten(0, 1),
                                                          row_weights[test].flatten())
-            out[f"{prefix}r2_by_position_{weighting}"] = [None] + [  # position 0: undefined
-                weighted_r2(target[test][:, n], prediction[:, n], row_weights[test][:, n]) for n in range(1, context)]
+            out[f"{prefix}r2_by_position_{weighting}"] = [None] + [  # indexed by history length; 0 not probed
+                weighted_r2(target[test][:, i], prediction[:, i], row_weights[test][:, i]) for i in range(len(lengths))]
 
-        position = torch.arange(context)  # = history length
-        first_half, block = position < context // 2, position % (context // 2) // (context // 8)
-        held_out = {"parity_": (position % 2 == 1, (position // 2) % 4), "early_": (first_half, block),
+        first_half, block = lengths < context // 2, lengths % (context // 2) // (context // 8)
+        held_out = {"parity_": (lengths % 2 == 1, (lengths // 2) % 4), "early_": (first_half, block),
                     "late_": (~first_half, block)}
         for split_name, (fit_positions, groups) in held_out.items():
             for (prefix, _), (r2, alpha) in zip(targets.items(), held_out_positions(

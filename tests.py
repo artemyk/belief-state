@@ -200,6 +200,20 @@ class Model(unittest.TestCase):
                 if k < 15:
                     self.assertGreater(float((features2[:, k + 1] - features[:, k + 1]).abs().max()), 1e-3)
 
+    def test_bos_hidden(self):
+        """Only position 0 reads BOS: changing its embedding changes position 0 and no later position, with learned
+        and with rotary position embeddings."""
+        tokens = torch.randint(0, 2, (8, 16), generator=torch.Generator().manual_seed(7))
+        for rope in (False, True):
+            model = untrained(Config(context=16, n_layers=2, d_model=32, d_mlp=128, rope=rope), 0.1, seed=0).eval()
+            with torch.no_grad():
+                logits, features = model(tokens, features=True)
+                model.embed.weight[model.cfg.vocab] += torch.randn(32, generator=torch.Generator().manual_seed(8))
+                logits2, features2 = model(tokens, features=True)
+            torch.testing.assert_close(features2[:, 1:], features[:, 1:], rtol=0, atol=1e-6)
+            torch.testing.assert_close(logits2[:, 1:], logits[:, 1:], rtol=0, atol=1e-6)
+            self.assertGreater(float((features2[:, 0] - features[:, 0]).abs().max()), 1e-3)
+
     def test_features(self):
         """(n_layers + 1) d_model features: the LayerNorm-ed input of each block, then the final LayerNorm output,
         which the unembedding maps to the logits."""
@@ -209,9 +223,11 @@ class Model(unittest.TestCase):
             self.assertEqual(features.shape, (4, 16, 3 * 32))
             bos = torch.full((4, 1), m.cfg.vocab)
             x = m.embed(torch.cat([bos, tokens[:, :-1]], 1)) + m.pos_embed(torch.arange(16))
+            mask = torch.ones(16, 16, dtype=torch.bool).tril()
+            mask[1:, 0] = False  # causal, BOS seen only by position 0
             for i, block in enumerate(m.blocks):
                 torch.testing.assert_close(features[..., 32 * i: 32 * (i + 1)], block.ln1(x))
-                x, _ = block(x)
+                x, _ = block(x, mask)
             torch.testing.assert_close(features[..., 64:], m.ln_final(x))
             torch.testing.assert_close(m.unembed(features[..., 64:]), logits)
 
