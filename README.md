@@ -6,7 +6,7 @@ A small, self-contained PyTorch implementation of a transformer trained on the M
 
 ## Results
 
-We compare large (4 layers, d_model 64) and small (2 layers, d_model 32) transformers with rotary or learned absolute position embeddings. The default is RoPE with a standard beginning-of-sequence (BOS) token. Every position can attend to BOS, which marks the start of the history. Each model is trained with 5 seeds for 100,000 steps, for ε = 0.05 and 0.
+We compare large (4 layers, d_model 64) and small (2 layers, d_model 32) transformers with rotary or learned absolute position embeddings. The default is RoPE with a standard beginning-of-sequence (BOS) token. Each model is trained with 5 seeds for 100,000 steps, for ε = 0.05 and 0.
 
 For each ε, the first table gives the *test KL*, the KL divergence from the Bayes-optimal next-token distribution to the model's at the end of training, and the held-out R² of a linear probe from the residual stream to the belief state, the posterior over the five hidden states given the history. The probe is scored on four splits of its rows:
 
