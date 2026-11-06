@@ -1,12 +1,5 @@
 {
-  "layers": 2,
-  "d_model": 32,
-  "rope": true,
-  "eps": 0.0,
-  "init_std": 0.1,
-  "seed": 0,
-  "steps": 100000,
-  "test_kl": 0.0018272855232296498,
+  "step": 100000,
   "checkpoint_sha256": "0e4f9bbfc3e6014140a67e4d23fec47ec1df0ea4786bd0d797507939e7201f47",
   "config": {
     "vocab": 2,
@@ -19,14 +12,13 @@
     "rope": true
   },
   "training_settings": {
-    "eps": "0.0",
-    "seed": "0",
-    "init_std": "0.1",
-    "context": "32",
-    "batch": "512",
-    "lr": "0.001",
-    "warmup": "1000",
-    "steps": "100000"
+    "eps": 0.0,
+    "seed": 0,
+    "init_std": 0.1,
+    "batch": 512,
+    "lr": 0.001,
+    "warmup": 1000,
+    "steps": 100000
   },
   "probe_settings": {
     "count": 8192,
@@ -54,8 +46,9 @@
       10.0
     ],
     "cv": "leave-one-position-out, mean weighted MSE",
-    "code_sha256": "96ec367e74104a589df1caa672976ead9f3a32fadfceae01237ead02773d3079"
+    "code_sha256": "0860a8d396f8afbdbd166a86675d504cf9b0a350eb1cf6c4e38d1d1e614668a4"
   },
+  "test_kl": 0.0018272855232296498,
   "r2_uniform": 0.6000625072534419,
   "alpha_uniform": 0.0031622776601683794,
   "r2_by_position_uniform": [

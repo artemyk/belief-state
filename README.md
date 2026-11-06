@@ -189,12 +189,15 @@ R² is undefined when the target is constant, such as the next-bit probability a
 | `mrrxor.py` | The process: exact transition tensor, sampling, Bayesian belief states, optimal next-token probabilities |
 | `model.py` | The transformer, with the number of layers, d_model, and learned or rotary position embeddings as parameters |
 | `train.py` | Training for a fixed number of steps, logging the KL from Bayes-optimal predictions to the model's |
-| `probe.py` | The held-out probes (random, odd/even and halves splits) and their controls, and the test KL |
+| `probing.py` | Probe data preparation, ridge fitting, scoring, and test KL |
+| `probe.py` | Loads checkpoints and saves probe results with their provenance |
 | `summarize.py` | Checks the saved probe results and prints Markdown tables |
 | `run_sweep.sh` | Trains and probes ε = 0.05 and 0 with 5 seeds each (or the seeds in `SEEDS`), for one model size and kind of position embedding |
 | `tests.py` | Self-contained checks of the process, the model, the probe and the scripts |
 
-Each run in `runs/L<layers>_d<d_model>[_rope]/eps<ε>/` includes the final checkpoint (`s<seed>.pt`) and its probe results (`s<seed>.json`), including the penalty chosen for each split, target, and weighting. The results record SHA-256 hashes of the checkpoint and probe code, together with the model, training, and probe settings. Summarization verifies the checkpoints and checks that the runs being compared have consistent settings. The untrained network is regenerated from its seed. Logs and intermediate checkpoints stay local.
+Each run in `runs/L<layers>_d<d_model>[_rope]/eps<ε>/` includes the final checkpoint (`s<seed>.pt`) and its probe results (`s<seed>.json`), including the penalty chosen for each split, target, and weighting. The untrained network is regenerated from its seed. Logs and intermediate checkpoints stay local.
+
+Each results file stores `config`, numeric `training_settings`, `probe_settings`, and the completed training `step`. SHA-256 hashes identify the checkpoint and numerical code used. Summarization verifies checkpoint identities and checks that the runs being compared have consistent settings.
 
 Requirements: Python 3.10+, PyTorch (tested with 2.14), and Numba (tested with 0.68) with NumPy. Training uses Apple's MPS or CUDA when available, with the model compiled by `torch.compile` (on CUDA, replayed as CUDA graphs).
 

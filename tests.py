@@ -22,6 +22,8 @@ import torch
 
 import mrrxor
 import probe
+import probing
+import summarize
 from model import Config, Transformer, rotary, untrained
 
 ROOT = Path(__file__).resolve().parent
@@ -296,19 +298,21 @@ class BeliefModel(torch.nn.Module):
 
 class Probe(unittest.TestCase):
     def test_split_is_by_trajectory(self):
-        test = probe.split(1000, 0.2, seed=0)
+        test = probing.split(1000, 0.2, seed=0)
         self.assertEqual(int(test.sum()), 200)
-        self.assertTrue(torch.equal(test, probe.split(1000, 0.2, seed=0)))
-        self.assertFalse(torch.equal(test, probe.split(1000, 0.2, seed=1)))
+        self.assertTrue(torch.equal(test, probing.split(1000, 0.2, seed=0)))
+        self.assertFalse(torch.equal(test, probing.split(1000, 0.2, seed=1)))
 
     def test_cached_probe_requires_matching_provenance(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "s0.pt"
             path.write_bytes(b"checkpoint contents")
-            checkpoint = {"config": vars(Config()), "args": {"seed": "0", "eps": "0.05"}}
+            checkpoint = {"config": vars(Config()), "args": {"seed": "0", "eps": "0.05", "context": "32"}}
             settings = dict(count=128, test_fraction=0.2, seed=0)
             metadata = probe.result_metadata(path, checkpoint, settings)
             self.assertEqual(metadata["checkpoint_sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+            self.assertEqual(metadata["training_settings"], {"seed": 0, "eps": 0.05})
+            self.assertEqual(metadata["config"]["context"], 32)
             cached = path.with_suffix(".json")
             self.assertFalse(probe.result_is_current(cached, metadata))
             cached.write_text(json.dumps(metadata))
@@ -341,19 +345,19 @@ class Probe(unittest.TestCase):
                                        ac.T @ (w[:, None] * (b - ym)))
             return torch.cat(((ym - xm @ slope)[None, :], slope))
 
-        scores = torch.zeros(len(probe.ALPHAS), 2, dtype=x.dtype)
+        scores = torch.zeros(len(probing.ALPHAS), 2, dtype=x.dtype)
         for position in range(x.shape[1]):
             train = torch.arange(x.shape[1]) != position
             tx, ty = x[:, train].flatten(0, 1), y[:, train].flatten(0, 1)
             tw = weights.repeat_interleave(int(train.sum()))
-            for k, alpha in enumerate(probe.ALPHAS):
+            for k, alpha in enumerate(probing.ALPHAS):
                 coef = solve(tx, ty, tw, alpha)
                 pred = x[:, position] @ coef[1:] + coef[0]
                 for j, error in enumerate((y[:, position] - pred).split([1, 2], 1)):
                     scores[k, j] += weights @ error.square().sum(1) / weights.sum()
         scores /= x.shape[1]
-        coef, alphas = probe.fit_ridge_cv(x, y, weights, [1, 2])
-        self.assertEqual(alphas, probe.ALPHAS[scores.argmin(0)].tolist())
+        coef, alphas = probing.fit_ridge_cv(probing.position_grams(x, y, weights), x.shape[-1], [1, 2])
+        self.assertEqual(alphas, probing.ALPHAS[scores.argmin(0)].tolist())
         all_weights = weights.repeat_interleave(x.shape[1])
         fits = [solve(x.flatten(0, 1), y.flatten(0, 1), all_weights, alpha) for alpha in alphas]
         torch.testing.assert_close(coef, torch.cat((fits[0][:, :1], fits[1][:, 1:]), 1))
@@ -361,28 +365,46 @@ class Probe(unittest.TestCase):
     def test_probe_validation_uses_only_fitting_rows(self):
         """All splits select alpha using only their fitting lengths and outer training trajectories."""
         T = mrrxor.transition_tensor(0.05)
-        with patch.object(probe, "fit_ridge_cv", wraps=probe.fit_ridge_cv) as fits:
-            probe.probe(BeliefModel(T), T, count=128)
+        data = probing.prepare_data(T, 32, count=128)
+        with patch.object(probing, "position_grams", wraps=probing.position_grams) as statistics, \
+                patch.object(probing, "fit_ridge_cv", wraps=probing.fit_ridge_cv) as fits:
+            probing.probe(BeliefModel(T), data)
+        self.assertEqual(statistics.call_count, 2)  # one set of statistics per weighting, shared by all four splits
         self.assertEqual(len(fits.call_args_list), 8)
-        train = ~probe.split(128, 0.2, seed=0)
+        train = ~probing.split(128, 0.2, seed=0)
         expected_lengths = [list(range(1, 32)), list(range(1, 32, 2)), list(range(1, 16)), list(range(16, 32))]
-        for weighting, calls in zip(("uniform", "process"), (fits.call_args_list[:4], fits.call_args_list[4:])):
-            tokens, weights = probe.trajectories(T, 32, weighting, 128, seed=0)
+        for weighting, gram_call, calls in zip(("uniform", "process"), statistics.call_args_list,
+                                              (fits.call_args_list[:4], fits.call_args_list[4:])):
+            tokens, weights = probing.trajectories(T, 32, weighting, 128, seed=0)
             beliefs = mrrxor.beliefs(T, tokens)
+            x, y, w = gram_call.args
+            self.assertEqual(x.shape[:2], (102, 31))
+            torch.testing.assert_close(y[:, :, :5], beliefs[train][:, 1:-1])
+            torch.testing.assert_close(w, weights[train].double())
+            full_grams = probing.position_grams(x, y, w)
             for call, lengths in zip(calls, expected_lengths):
-                x, y, w, sizes = call.args
-                self.assertEqual(x.shape[:2], (102, len(lengths)))
-                torch.testing.assert_close(y[:, :, :5], beliefs[train][:, lengths])
-                torch.testing.assert_close(w, weights[train].double())
+                grams, n_features, sizes = call.args
+                torch.testing.assert_close(grams, full_grams[torch.tensor(lengths) - 1])
+                self.assertEqual(n_features, x.shape[-1])
                 self.assertEqual(sizes, [5, 2, 5])
+
+    def test_evaluation_shares_data_between_networks(self):
+        model = untrained(Config(context=8, n_layers=1, d_model=8, d_mlp=32), 0.1, seed=0).eval()
+        with patch.object(probing, "prepare_data", wraps=probing.prepare_data) as prepare, \
+                patch.object(probing, "probe", wraps=probing.probe) as fits:
+            probing.evaluate(model, {"eps": 0.05, "init_std": 0.1, "seed": 0},
+                             {"count": 128, "test_fraction": 0.2, "seed": 0}, include_initial=True)
+        self.assertEqual(prepare.call_count, 1)
+        self.assertEqual(fits.call_count, 2)
+        self.assertIs(fits.call_args_list[0].args[1], fits.call_args_list[1].args[1])
 
     def test_uniform_weighting(self):
         """eps > 0: uniformly random strings. eps = 0: process samples weighted by 1 / probability, which makes every
         possible sequence equally likely."""
-        tokens, weights = probe.trajectories(mrrxor.transition_tensor(0.05), 32, "uniform", 1000, seed=0)
+        tokens, weights = probing.trajectories(mrrxor.transition_tensor(0.05), 32, "uniform", 1000, seed=0)
         self.assertTrue((weights == 1).all() and set(tokens.unique().tolist()) == {0, 1})
         T = mrrxor.transition_tensor(0.0)
-        tokens, weights = probe.trajectories(T, 6, "uniform", 200_000, seed=0)
+        tokens, weights = probing.trajectories(T, 6, "uniform", 200_000, seed=0)
         support = [x for x in itertools.product((0, 1), repeat=6)
                    if reference_joint(reference_tensor(0.0), x)[-1].sum() > 0]
         codes = (tokens * 2 ** torch.arange(5, -1, -1)).sum(1)
@@ -395,7 +417,7 @@ class Probe(unittest.TestCase):
     def test_shuffled_permutes_distinct_beliefs(self):
         T = mrrxor.transition_tensor(0.0)
         beliefs = mrrxor.beliefs(T, mrrxor.sample(T, 500, 32, torch.Generator().manual_seed(8)))[:, :-1]
-        s = probe.shuffled(beliefs, seed=0)
+        s = probing.shuffled(beliefs, seed=0)
         rows, shuffled_rows = beliefs.flatten(0, 1).round(decimals=10), s.flatten(0, 1)
         values = torch.unique(rows, dim=0)
         self.assertTrue(torch.equal(torch.unique(shuffled_rows, dim=0), values))  # the same set of beliefs
@@ -409,7 +431,8 @@ class Probe(unittest.TestCase):
         """With features equal to the current belief, the probe recovers the belief and the next-token distribution
         exactly, while the shuffled control does not. A one-position lag must lower R^2 clearly."""
         T = mrrxor.transition_tensor(0.05)
-        exact = probe.probe(BeliefModel(T, lag=0), T, count=2048)
+        data = probing.prepare_data(T, 32, count=2048)
+        exact = probing.probe(BeliefModel(T, lag=0), data)
         for weighting in ("uniform", "process"):
             self.assertAlmostEqual(exact[f"r2_{weighting}"], 1.0, places=5)
             self.assertAlmostEqual(exact[f"next_r2_{weighting}"], 1.0, places=5)
@@ -421,16 +444,17 @@ class Probe(unittest.TestCase):
                 self.assertGreater(exact[f"{split}r2_{weighting}"], 0.999, split)
                 self.assertGreater(exact[f"{split}next_r2_{weighting}"], 0.999, split)
                 self.assertLess(exact[f"{split}shuffled_r2_{weighting}"], 0.1, split)
-        lagged = probe.probe(BeliefModel(T, lag=1), T, count=2048)
+        lagged = probing.probe(BeliefModel(T, lag=1), data)
         self.assertLess(lagged["r2_uniform"], 0.9)
 
     def test_held_out_positions_fit_and_score_the_stated_positions(self):
         """Without belief information at the fitting or the scoring positions of a held-out-position split, its probe
         cannot recover the belief, while the random-split probe still can from the other positions."""
         T = mrrxor.transition_tensor(0.05)
+        data = probing.prepare_data(T, 32, count=2048)
         for blank, splits in (("odd", ["parity_"]), ("even", ["parity_"]), ("first", ["early_", "late_"]),
                               ("second", ["early_", "late_"])):
-            result = probe.probe(BeliefModel(T, blank=blank), T, count=2048)
+            result = probing.probe(BeliefModel(T, blank=blank), data)
             self.assertGreater(result["r2_uniform"], 0.3, blank)
             for split in splits:
                 self.assertLess(result[f"{split}r2_uniform"], 0.1, (blank, split))
@@ -448,13 +472,16 @@ class Probe(unittest.TestCase):
                              ["step_000010.pt", "step_000020.pt", "step_000030.pt"])
             final = torch.load(f"{run}.pt", weights_only=True)
             self.assertEqual(final["step"], 30)
+            self.assertEqual(final["args"]["seed"], 0)
+            self.assertEqual(final["args"]["eps"], 0.05)
             self.assertTrue(np.isfinite(final["test_kl"]))
             self.assertEqual({v.device.type for v in final["model"].values()}, {"cpu"})
             for name, checkpoint in ((f"{run}.pt", "final"), (str(run), "all")):  # a run with or without .pt
                 subprocess.run(python + [str(ROOT / "probe.py"), name, "--trajectories", "256", "--checkpoint",
                                          checkpoint], check=True, capture_output=True, cwd=ROOT)
             result = json.loads(Path(f"{run}.json").read_text())
-            self.assertEqual(result["layers"], 1)
+            self.assertEqual(result["config"]["n_layers"], 1)
+            self.assertEqual(result["step"], 30)
             for key in ("r2", "next_r2", "shuffled_r2", "init_r2", "parity_r2", "parity_next_r2",
                         "parity_shuffled_r2", "init_parity_r2"):
                 for weighting in ("uniform", "process"):
@@ -515,8 +542,7 @@ class Summary(unittest.TestCase):
             path.write_bytes(f"checkpoint {seed}".encode())
             checkpoint = {"config": vars(Config(n_layers=1, d_model=8, d_mlp=32)),
                           "args": {"eps": "0.05", "seed": str(seed), "lr": "0.001"}}
-            result = {"layers": 1, "d_model": 8, "rope": True, "eps": 0.05, "seed": seed,
-                      "steps": 30, "test_kl": 0.01,
+            result = {"step": 30, "test_kl": 0.01,
                       **probe.result_metadata(path, checkpoint, dict(count=128, test_fraction=0.2, seed=0))}
             for split in ("", "parity_", "early_", "late_"):
                 for prefix, target in (("", ""), ("", "next_"), ("", "shuffled_"), ("init_", "")):
@@ -526,17 +552,13 @@ class Summary(unittest.TestCase):
             path.write_text(json.dumps(result))
             self.paths.append(path)
 
-    def summarize(self):
-        return subprocess.run([sys.executable, str(ROOT / "summarize.py")], cwd=self.root,
-                              capture_output=True, text=True)
-
     def test_rejects_incompatible_results(self):
         path = self.paths[1]
         original = json.loads(path.read_text())
         cases = [(("probe_settings", "seed"), 1, "incompatible probe settings"),
                  (("config", "context"), 64, "incompatible model or training settings"),
-                 (("training_settings", "lr"), "0.1", "incompatible model or training settings"),
-                 (("steps",), 100, "incompatible model or training settings"),
+                 (("training_settings", "lr"), 0.1, "incompatible model or training settings"),
+                 (("step",), 100, "incompatible model or training settings"),
                  (("checkpoint_sha256",), "wrong hash", "hash mismatch")]
         for keys, value, message in cases:
             with self.subTest(keys=keys):
@@ -546,24 +568,21 @@ class Summary(unittest.TestCase):
                     field = field[key]
                 field[keys[-1]] = value
                 path.write_text(json.dumps(result))
-                completed = self.summarize()
-                self.assertNotEqual(completed.returncode, 0)
-                self.assertIn(message, completed.stderr)
-                self.assertEqual(completed.stdout, "")
+                with self.assertRaisesRegex(ValueError, message):
+                    summarize.load_runs(self.paths)
 
     def test_rejects_duplicate_seeds_and_missing_provenance(self):
         path = self.paths[1]
         result = json.loads(path.read_text())
-        result["seed"], result["training_settings"]["seed"] = 0, "0"
+        result["training_settings"]["seed"] = 0
         path.write_text(json.dumps(result))
-        completed = self.summarize()
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("duplicate training seed", completed.stderr)
-        del result["checkpoint_sha256"]
-        path.write_text(json.dumps(result))
-        completed = self.summarize()
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("missing provenance", completed.stderr)
+        with self.assertRaisesRegex(ValueError, "duplicate training seed"):
+            summarize.load_runs(self.paths)
+        for field in ("checkpoint_sha256", "step"):
+            incomplete = {key: value for key, value in result.items() if key != field}
+            path.write_text(json.dumps(incomplete))
+            with self.assertRaisesRegex(ValueError, "missing provenance"):
+                summarize.load_runs(self.paths)
 
     def test_prints_only_and_preserves_undefined_scores(self):
         result = json.loads(self.paths[0].read_text())
@@ -571,9 +590,21 @@ class Summary(unittest.TestCase):
         self.paths[0].write_text(json.dumps(result))
         (self.root / "README.md").write_text("Keep this document unchanged.\n")
         before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
-        completed = self.summarize()
+        markdown = summarize.render_summary(summarize.load_runs(self.paths))
+        completed = subprocess.run([sys.executable, str(ROOT / "summarize.py")], cwd=self.root,
+                                   capture_output=True, text=True)
         self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout, markdown + "\n")
         self.assertIn("undefined", completed.stdout)
+        self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
+
+    def test_imports_do_not_execute_scripts(self):
+        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        code = f"import sys; sys.path.insert(0, {str(ROOT)!r}); import train, probe, probing, summarize"
+        completed = subprocess.run([sys.executable, "-c", code], cwd=self.root,
+                                   check=True, capture_output=True, text=True)
+        self.assertEqual(completed.stdout, "")
+        self.assertEqual(completed.stderr, "")
         self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
 
 
