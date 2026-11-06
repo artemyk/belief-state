@@ -4,8 +4,7 @@ table, and a bold title above each table. The first table has the final test KL 
 belief-state probe for each split of the probe's rows (random; odd/even positions; first half to second half; second
 half to first half); the second has its three controls for the random split (next-token distribution, shuffled belief
 state, and the belief-state probe on the untrained network). Both weight histories uniformly. Collapsed below them
-are the same two tables with process weighting (for eps > 0 only: for eps = 0 the two weightings give nearly the same
-results) and the controls for the held-out splits. Entries are means over seeds, with the standard deviation for the
+are the same two tables with process weighting and the controls for the held-out splits. Entries are means over seeds, with the standard deviation for the
 belief state (joined by no-break spaces, so that it does not wrap). Below the tables: the number of seeds, if not 5."""
 import json
 from collections import defaultdict
@@ -80,9 +79,8 @@ def titled(weighting: str, eps: float) -> list[str]:
 
 def section(eps: float) -> str:
     parts = [f"### ε = {eps:g}", *titled("uniform", eps)]
-    if eps > 0:
-        parts.append("<details>\n<summary>Process weighting</summary>\n\n" + "\n\n".join(titled("process", eps))
-                     + "\n\n</details>")
+    parts.append("<details>\n<summary>Process weighting</summary>\n\n" + "\n\n".join(titled("process", eps))
+                 + "\n\n</details>")
     parts.append(f"<details>\n<summary>R² of the controls, held-out splits</summary>\n\n"
                  f"{controls_table(eps, 'uniform', SPLITS[1:])}\n\n</details>")
     return "\n\n".join(parts)

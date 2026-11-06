@@ -6,24 +6,12 @@ block and the LayerNorm-ed output of the last block ((n_layers + 1) x d_model fe
 The target at position n is the exact belief state after the first n tokens, n = 1, ..., 31. Position 0, which reads
 only the BOS token, is not probed: it has no history, and its belief is the stationary distribution in every
 trajectory. The trajectories are split 80/20, and
-the probe is scored with
-R^2 = 1 - weighted sum of squared errors / weighted sum of squared deviations from the weighted mean, pooled over
-the target's coordinates. Two splits of the rows:
-  random split    an affine least-squares probe fitted on all positions of the training trajectories and scored on
-                  all positions of the test trajectories (in the results also for each position separately)
-  held-out positions  fitted on some positions of the training trajectories and scored on the other positions of
-                  the test trajectories, so that no history is shared and the probe must carry over to positions it
-                  has not seen:
-                    parity_  fitted on the odd positions (history lengths 1, 3, ..., 31), scored on the even ones
-                             (2, 4, ..., 30)
-                    early_   fitted on the first half (lengths 1-15), scored on the second half (16-31)
-                    late_    fitted on the second half, scored on the first half
-                  Least squares extrapolates badly to unseen positions, so these probes are ridge regressions. The
-                  penalty is alpha times the mean eigenvalue of the weighted feature covariance, with alpha chosen
-                  from ALPHAS separately for each target, by leave-one-group-out cross-validation over four groups of
-                  fitting positions of the training trajectories: {1, 9, 17, 25}, {3, 11, 19, 27}, ... for parity_,
-                  and four contiguous blocks of up to four positions for the halves ({1, 2, 3}, {4, ..., 7}, ... and
-                  {16, ..., 19}, ...) (keys <split>*alpha_*).
+the probe is scored by weighted R^2, pooled over the target coordinates.
+All splits use an affine ridge regression. The random split fits and scores all positive history lengths. The
+parity_ split fits odd lengths and scores even lengths, early_ fits 1–15 and scores 16–31, and late_ reverses
+the two halves. For each split, weighting and target, we minimize weighted validation squared error over five
+folds of whole training trajectories at the fitting lengths. The chosen penalty is used for a final fit to all
+training trajectories at those lengths. The outer test trajectories are used only for scoring.
 
 Histories are weighted in two ways, through the trajectory sample (used for both fitting and scoring):
   process  trajectories sampled from the process
@@ -33,7 +21,7 @@ Histories are weighted in two ways, through the trajectory sample (used for both
 Every trajectory contributes one row per position, so all positions carry equal total weight. Short prefixes recur
 across trajectories, so at the first few positions most test rows coincide with training rows.
 
-Two controls use the same features and splits (one solve fits all targets):
+Two controls use the same features and splits:
   next_      the Bayes-optimal next-token distribution, which the network is trained to output
   shuffled_  the belief states with the distinct beliefs randomly permuted among themselves: histories that share a
              belief still share a target, but the targets no longer reflect the geometry of the beliefs. This measures
@@ -86,42 +74,61 @@ def shuffled(beliefs: torch.Tensor, seed: int) -> torch.Tensor:
     return values[permutation][index].view_as(beliefs)
 
 
-def weighted_fit(x: torch.Tensor, y: torch.Tensor, w: torch.Tensor):
-    """Weighted minimum-norm least squares with an intercept. The activations are float32, so singular values below
-    1e-6 of the largest are treated as zero; otherwise rounding noise in nearly degenerate directions (e.g. at small
-    initialization) gets large coefficients."""
-    w = w / w.sum()
-    x_mean, y_mean = w @ x, w @ y
-    root = w.sqrt()[:, None]
-    coef = torch.linalg.lstsq(root * (x - x_mean), root * (y - y_mean), rcond=1e-6, driver="gelsd").solution
-    return lambda x_new: (x_new - x_mean) @ coef + y_mean
-
-
 ALPHAS = torch.logspace(-8, 1, 19, dtype=torch.float64)
+N_FOLDS = 5
 
 
-def ridge_path(x: torch.Tensor, y: torch.Tensor, w: torch.Tensor) -> list:
-    """Weighted ridge regressions with an unpenalized intercept, one predictor per alpha in ALPHAS. The penalty is
-    alpha times the mean eigenvalue of the weighted feature covariance."""
-    w = w / w.sum()
-    x_mean, y_mean = w @ x, w @ y
-    root = w.sqrt()[:, None]
-    xc = root * (x - x_mean)
-    values, vectors = torch.linalg.eigh(xc.T @ xc)
+def ridge_path(gram: torch.Tensor, n_features: int) -> torch.Tensor:
+    """Affine coefficients for each alpha. gram is the weighted Gram matrix of [1, features, targets]."""
+    moment = gram / gram[0, 0]
+    mean = moment[0, 1:]
+    cov = moment[1:, 1:] - torch.outer(mean, mean)
+    values, vectors = torch.linalg.eigh(cov[:n_features, :n_features])
     values = values.clamp_min(0)
-    scale = values.mean().clamp_min(torch.finfo(values.dtype).tiny)  # constant features get zero coefficients
-    projected = vectors.T @ (xc.T @ (root * (y - y_mean)))
-    coefs = [vectors @ (projected / (values + alpha * scale)[:, None]) for alpha in ALPHAS]
-    return [lambda x_new, coef=coef: (x_new - x_mean) @ coef + y_mean for coef in coefs]
+    scale = values.mean()
+    slopes = gram.new_zeros(len(ALPHAS), n_features, len(mean) - n_features)
+    if scale > 0:
+        projected = vectors.T @ cov[:n_features, n_features:]
+        slopes = vectors @ (projected / (values + ALPHAS[:, None] * scale)[:, :, None])
+    intercepts = mean[n_features:] - mean[:n_features] @ slopes
+    return torch.cat((intercepts[:, None, :], slopes), 1)
 
 
-def weighted_r2(y: torch.Tensor, prediction: torch.Tensor, w: torch.Tensor) -> float:
+def fit_ridge_cv(x, y, weights, folds, target_sizes):
+    """Choose alpha per target by pooled out-of-fold squared error, then refit on the fitting trajectories."""
+    # Each fold contributes all fitting positions of its trajectories. Its Gram matrix suffices both
+    # to fit ridge and to evaluate validation error without materializing predictions for every alpha.
+    n_features = x.shape[-1]
+    grams = []
+    for fold in folds:
+        features, targets = x[fold].flatten(0, 1), y[fold].flatten(0, 1)
+        rows = torch.cat((torch.ones_like(features[:, :1]), features, targets), 1)
+        rows *= weights[fold].sqrt().repeat_interleave(x.shape[1])[:, None]
+        grams.append(rows.T @ rows)
+    total = torch.stack(grams).sum(0)
+    cv_error = x.new_zeros(len(ALPHAS), y.shape[-1])
+    negative_identity = -torch.eye(y.shape[-1], dtype=x.dtype).expand(len(ALPHAS), -1, -1)
+    for validation in grams:
+        coef = ridge_path(total - validation, n_features)
+        # [1, x, y] @ residual_map equals prediction minus target.
+        residual_map = torch.cat((coef, negative_identity), 1)
+        cv_error += (residual_map * (validation @ residual_map)).sum(1)
+    best = [int(errors.sum(1).argmin()) for errors in cv_error.split(target_sizes, 1)]
+    final = ridge_path(total, n_features)
+    coefficients = torch.cat([block[k] for block, k in zip(final.split(target_sizes, 2), best)], 1)
+    return coefficients, [float(ALPHAS[k]) for k in best]
+
+
+def weighted_r2(y: torch.Tensor, prediction: torch.Tensor, w: torch.Tensor) -> float | None:
+    """R² is undefined for a constant target (e.g. the next-bit probability after one observation)."""
+    if (y - y[0]).abs().max() <= 32 * torch.finfo(y.dtype).eps * y.abs().max():
+        return None
     w = w / w.sum()
     return float(1 - (w @ ((y - prediction) ** 2).sum(1)) / (w @ ((y - w @ y) ** 2).sum(1)))
 
 
 def probe(model: Transformer, T: torch.Tensor, count: int = 8192, test_fraction: float = 0.2, seed: int = 0) -> dict:
-    """Pooled held-out R^2 for both weightings and both splits (by position too, for the random split), of the
+    """Pooled held-out R^2 for both weightings and all four splits (by position too, for the random split), of the
     belief state and the two controls."""
     out = {}
     context = model.cfg.context
@@ -137,47 +144,28 @@ def probe(model: Transformer, T: torch.Tensor, count: int = 8192, test_fraction:
         targets = {"": beliefs, "next_": mrrxor.next_token_probabilities(T, beliefs),
                    "shuffled_": shuffled(beliefs, seed)}
         stacked = torch.cat(list(targets.values()), -1)
-        predict = weighted_fit(features[~test].flatten(0, 1), stacked[~test].flatten(0, 1),
-                               row_weights[~test].flatten())
-        predictions = predict(features[test].flatten(0, 1)).view(int(test.sum()), len(lengths), -1)
-        for (prefix, target), prediction in zip(targets.items(),
-                                                predictions.split([t.shape[-1] for t in targets.values()], -1)):
-            out[f"{prefix}r2_{weighting}"] = weighted_r2(target[test].flatten(0, 1), prediction.flatten(0, 1),
-                                                         row_weights[test].flatten())
-            out[f"{prefix}r2_by_position_{weighting}"] = [None] + [  # indexed by history length; 0 not probed
-                weighted_r2(target[test][:, i], prediction[:, i], row_weights[test][:, i]) for i in range(len(lengths))]
-
-        first_half, block = lengths < context // 2, lengths % (context // 2) // (context // 8)
-        held_out = {"parity_": (lengths % 2 == 1, (lengths // 2) % 4), "early_": (first_half, block),
-                    "late_": (~first_half, block)}
-        for split_name, (fit_positions, groups) in held_out.items():
-            for (prefix, _), (r2, alpha) in zip(targets.items(), held_out_positions(
-                    features, targets, row_weights, test, fit_positions, groups)):
-                out[f"{split_name}{prefix}r2_{weighting}"] = r2
-                out[f"{split_name}{prefix}alpha_{weighting}"] = alpha
-    return out
-
-
-def held_out_positions(features: torch.Tensor, targets: dict, row_weights: torch.Tensor, test: torch.Tensor,
-                       fit_positions: torch.Tensor, groups: torch.Tensor) -> list[tuple[float, float]]:
-    """(R^2, alpha) per target of the ridge probe fitted on fit_positions of the training trajectories and scored on
-    the other positions of the test trajectories. alpha is chosen per target by leave-one-group-out cross-validation
-    over the four groups (groups: the group 0-3 of each position) of fitting positions of the training trajectories."""
-    stacked, sizes = torch.cat(list(targets.values()), -1), [t.shape[-1] for t in targets.values()]
-    train, evaluate = ~test[:, None] & fit_positions, test[:, None] & ~fit_positions
-    cv = torch.zeros(len(targets), len(ALPHAS))
-    for g in range(4):
-        fit_rows, val_rows = train & (groups != g), train & (groups == g)
-        for k, predict in enumerate(ridge_path(features[fit_rows], stacked[fit_rows], row_weights[fit_rows])):
-            predictions = predict(features[val_rows]).split(sizes, -1)
-            for j, (target, prediction) in enumerate(zip(targets.values(), predictions)):
-                cv[j, k] += weighted_r2(target[val_rows], prediction, row_weights[val_rows]) / 4
-    predictors = ridge_path(features[train], stacked[train], row_weights[train])
-    out = []
-    for j, target in enumerate(targets.values()):
-        k = int(cv[j].argmax())
-        prediction = predictors[k](features[evaluate]).split(sizes, -1)[j]
-        out.append((weighted_r2(target[evaluate], prediction, row_weights[evaluate]), float(ALPHAS[k])))
+        fit_count = int((~test).sum())
+        if fit_count < N_FOLDS or not test.any():
+            raise ValueError("Need at least five training trajectories and one test trajectory.")
+        folds = torch.randperm(fit_count, generator=torch.Generator().manual_seed(seed)).tensor_split(N_FOLDS)
+        all_positions = lengths > 0
+        first_half = lengths < context // 2
+        splits = {"": (all_positions, all_positions), "parity_": (lengths % 2 == 1, lengths % 2 == 0),
+                  "early_": (first_half, ~first_half), "late_": (~first_half, first_half)}
+        sizes = [value.shape[-1] for value in targets.values()]
+        for split_name, (fit, evaluate) in splits.items():
+            coef, alphas = fit_ridge_cv(features[~test][:, fit], stacked[~test][:, fit],
+                                        weights[~test].double(), folds, sizes)
+            predictions = features[test][:, evaluate] @ coef[1:] + coef[0]
+            w = row_weights[test][:, evaluate]
+            for (prefix, target), pred, alpha in zip(targets.items(), predictions.split(sizes, -1), alphas):
+                key = split_name + prefix
+                actual = target[test][:, evaluate]
+                out[f"{key}r2_{weighting}"] = weighted_r2(actual.flatten(0, 1), pred.flatten(0, 1), w.flatten())
+                out[f"{key}alpha_{weighting}"] = alpha
+                if not split_name:
+                    out[f"{key}r2_by_position_{weighting}"] = [None] + [
+                        weighted_r2(actual[:, i], pred[:, i], w[:, i]) for i in range(len(lengths))]
     return out
 
 
@@ -225,11 +213,13 @@ def main() -> None:
             test_kl = mrrxor.kl_to_model(test_optimal, model(test_tokens))
         result = {"layers": model.cfg.n_layers, "d_model": model.cfg.d_model, "rope": model.cfg.rope,
                   "eps": float(meta["eps"]), "init_std": float(meta["init_std"]), "seed": int(meta["seed"]),
-                  "steps": checkpoint["step"], "test_kl": test_kl, **probe(model, T, **settings)}
+                  "steps": checkpoint["step"], "test_kl": test_kl,
+                  "probe_settings": {**settings, "trajectory_folds": N_FOLDS, "relative_alphas": ALPHAS.tolist()},
+                  **probe(model, T, **settings)}
         if name == "final":
             initial = untrained(model.cfg, float(meta["init_std"]), int(meta["seed"])).eval()
             result.update({f"init_{key}": value for key, value in probe(initial, T, **settings).items()})
-        results_path.write_text(json.dumps(result, indent=2))
+        results_path.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n")
         print(f"{run.parent.parent.name}/{run.parent.name}/{run.name} ({name}, step {result['steps']}): "
               f"test KL {test_kl:.2e}, pooled held-out R^2 {result['r2_uniform']:.3f} (uniform), "
               f"{result['r2_process']:.3f} (process); next-token "

@@ -1,10 +1,8 @@
 """The transformer of Shai et al. (2024), Appendix A.6. By default: 4 layers, d_model 64, one attention head of
-dimension 8, ReLU MLPs of width 256, pre-LayerNorm, learned positional embeddings, causal attention, no dropout.
-With rope=True, rotary position embeddings (Su et al. 2021) on the queries and keys replace the learned positional
-embeddings. The network reads a beginning-of-sequence (BOS) token, an extra row of the embedding, followed by the
-tokens, so that its outputs predict every token of a sequence, including the first. Only position 0 attends to BOS:
-the first prediction is the network's output on BOS alone, and every later position reads only the tokens, as it would
-without BOS. BOS thus gives no later position a marker of its distance from the start."""
+dimension 8, ReLU MLPs of width 256, pre-LayerNorm, causal attention, no dropout.
+By default the queries and keys use rotary position embeddings (Su et al. 2021). The learned absolute embedding
+comparison uses rope=False. The network reads a beginning-of-sequence (BOS) token, an extra row of the embedding, followed by the
+tokens, so that its outputs predict every token of a sequence, including the first."""
 from dataclasses import dataclass
 
 import torch
@@ -21,7 +19,7 @@ class Config:
     n_heads: int = 1
     d_head: int = 8
     d_mlp: int = 256
-    rope: bool = False
+    rope: bool = True
 
 
 def rotary(x: torch.Tensor, base: float = 10_000.0) -> torch.Tensor:
@@ -45,15 +43,14 @@ class Block(nn.Module):
         self.ln2 = nn.LayerNorm(cfg.d_model)
         self.mlp = nn.Sequential(nn.Linear(cfg.d_model, cfg.d_mlp), nn.ReLU(), nn.Linear(cfg.d_mlp, cfg.d_model))
 
-    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Returns the updated residual stream and the normalized block input (a probe feature). mask (length,
-        length) is True where a query position may attend to a key position."""
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Returns the updated residual stream and the normalized block input (a probe feature)."""
         normalized = self.ln1(x)
         batch, length, _ = x.shape
         q, k, v = self.qkv(normalized).view(batch, length, 3, self.n_heads, self.d_head).permute(2, 0, 3, 1, 4)
         if self.rope:
             q, k = rotary(q), rotary(k)
-        attention = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
+        attention = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         x = x + self.out(attention.transpose(1, 2).reshape(batch, length, -1))
         x = x + self.mlp(self.ln2(x))
         return x, normalized
@@ -76,8 +73,7 @@ class Transformer(nn.Module):
 
     def forward(self, tokens: torch.Tensor, features: bool = False):
         """Logits (batch, length, vocab): position n predicts tokens[:, n] from tokens[:, :n]. The network reads BOS
-        followed by tokens[:, :-1], so position n has seen n tokens and the last token is only a target. Attention
-        is causal, and only position 0 attends to BOS. With
+        followed by tokens[:, :-1], so position n has seen n tokens and the last token is only a target. With
         features=True, also the probe features (batch, length, (n_layers + 1) d_model): the residual stream at every
         layer as the network reads it, i.e. the LayerNorm-ed input of each block and the LayerNorm-ed output of the
         last block (the input to the unembedding)."""
@@ -85,12 +81,9 @@ class Transformer(nn.Module):
         x = self.embed(inputs)
         if self.pos_embed is not None:
             x = x + self.pos_embed(torch.arange(tokens.shape[1], device=tokens.device))
-        length = tokens.shape[1]
-        mask = torch.ones(length, length, dtype=torch.bool, device=tokens.device).tril()
-        mask[1:, 0] = False  # BOS is seen only by itself
         normalized = []
         for block in self.blocks:
-            x, block_input = block(x, mask)
+            x, block_input = block(x)
             normalized.append(block_input)
         final = self.ln_final(x)
         logits = self.unembed(final)
