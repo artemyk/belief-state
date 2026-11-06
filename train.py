@@ -5,10 +5,9 @@ included (the model reads a BOS token first), averaged over the 32 tokens. Progr
 divergence from the Bayes-optimal next-token distribution (computed from the exact belief states) to the model's
 prediction, averaged over all tokens of a fixed held-out set of 4,096 sequences. It is logged every `--log-every`
 steps, and the current weights are saved to <out>/step_<step>.pt every `--ckpt-every` steps, to follow training.
-<out>.pt holds the final weights and the training summary (steps, test KL); it is the only file of a run kept in the
-repository.
+<out>.pt holds the final weights and the training summary (steps, test KL).
 
-Usage: python train.py --eps 0.05 --seed 0 --out runs/L4_d64/eps0.05/s0
+Usage: python train.py --eps 0.05 --seed 0 --out runs/L4_d64_rope/eps0.05/s0
 """
 import argparse
 import time
@@ -25,7 +24,8 @@ parser.add_argument("--init-std", type=float, default=0.1,
                     help="std of the normal initialization of all weights")
 parser.add_argument("--layers", type=int, default=4)
 parser.add_argument("--d-model", type=int, default=64, help="residual-stream width; the MLPs have width 4 d_model")
-parser.add_argument("--rope", action="store_true", help="rotary position embeddings instead of learned ones")
+parser.add_argument("--rope", action=argparse.BooleanOptionalAction, default=True,
+                    help="use rotary position embeddings (default); --no-rope uses learned absolute embeddings")
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--eps", type=float, default=0.05, help="MRRXOR mixing probability")
 parser.add_argument("--context", type=int, default=32)
@@ -35,7 +35,7 @@ parser.add_argument("--warmup", type=int, default=1000)
 parser.add_argument("--steps", type=int, default=100_000, help="number of steps (and of the cosine schedule)")
 parser.add_argument("--log-every", type=int, default=1000)
 parser.add_argument("--ckpt-every", type=int, default=5000)
-parser.add_argument("--out", type=Path, required=True, help="run name, e.g. runs/L4_d64/eps0.05/s0 (no extension)")
+parser.add_argument("--out", type=Path, required=True, help="run name, e.g. runs/L4_d64_rope/eps0.05/s0 (no extension)")
 args = parser.parse_args()
 
 device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")

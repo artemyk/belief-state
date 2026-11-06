@@ -182,7 +182,7 @@ class Training(unittest.TestCase):
 
 class Model(unittest.TestCase):
     def setUp(self):
-        self.model = untrained(Config(context=16, n_layers=2, d_model=32, d_mlp=128), 0.1, seed=0).eval()
+        self.model = untrained(Config(context=16, n_layers=2, d_model=32, d_mlp=128, rope=False), 0.1, seed=0).eval()
 
     def test_causal(self):
         """Position n has seen exactly tokens[:, :n]: changing token k leaves the logits and features at positions up
@@ -200,19 +200,16 @@ class Model(unittest.TestCase):
                 if k < 15:
                     self.assertGreater(float((features2[:, k + 1] - features[:, k + 1]).abs().max()), 1e-3)
 
-    def test_bos_hidden(self):
-        """Only position 0 reads BOS: changing its embedding changes position 0 and no later position, with learned
-        and with rotary position embeddings."""
-        tokens = torch.randint(0, 2, (8, 16), generator=torch.Generator().manual_seed(7))
-        for rope in (False, True):
-            model = untrained(Config(context=16, n_layers=2, d_model=32, d_mlp=128, rope=rope), 0.1, seed=0).eval()
-            with torch.no_grad():
-                logits, features = model(tokens, features=True)
-                model.embed.weight[model.cfg.vocab] += torch.randn(32, generator=torch.Generator().manual_seed(8))
-                logits2, features2 = model(tokens, features=True)
-            torch.testing.assert_close(features2[:, 1:], features[:, 1:], rtol=0, atol=1e-6)
-            torch.testing.assert_close(logits2[:, 1:], logits[:, 1:], rtol=0, atol=1e-6)
-            self.assertGreater(float((features2[:, 0] - features[:, 0]).abs().max()), 1e-3)
+    def test_bos_visible_on_constant_histories(self):
+        """RoPE can distinguish one 1 from five 1s, and the BOS embedding affects both predictions."""
+        model = untrained(Config(rope=True), 0.1, seed=0).eval()
+        tokens = torch.ones(1, 6, dtype=torch.long)
+        with torch.no_grad():
+            logits = model(tokens)
+            self.assertGreater(float((logits[:, 1] - logits[:, 5]).abs().max()), 1e-4)
+            model.embed.weight[model.cfg.vocab].zero_()
+            difference = (logits - model(tokens)).abs().amax(-1)
+            self.assertTrue((difference[:, [1, 5]] > 1e-4).all())
 
     def test_features(self):
         """(n_layers + 1) d_model features: the LayerNorm-ed input of each block, then the final LayerNorm output,
@@ -223,11 +220,9 @@ class Model(unittest.TestCase):
             self.assertEqual(features.shape, (4, 16, 3 * 32))
             bos = torch.full((4, 1), m.cfg.vocab)
             x = m.embed(torch.cat([bos, tokens[:, :-1]], 1)) + m.pos_embed(torch.arange(16))
-            mask = torch.ones(16, 16, dtype=torch.bool).tril()
-            mask[1:, 0] = False  # causal, BOS seen only by position 0
             for i, block in enumerate(m.blocks):
                 torch.testing.assert_close(features[..., 32 * i: 32 * (i + 1)], block.ln1(x))
-                x, _ = block(x, mask)
+                x, _ = block(x)
             torch.testing.assert_close(features[..., 64:], m.ln_final(x))
             torch.testing.assert_close(m.unembed(features[..., 64:]), logits)
 
@@ -270,9 +265,9 @@ class Model(unittest.TestCase):
         """README: 144k parameters (Shai et al. 2024 architecture) and 20k (2 layers, d_model 32); 142k and 19k with
         RoPE."""
         count = lambda cfg: sum(p.numel() for p in Transformer(cfg).parameters())
-        self.assertEqual(count(Config()), 144_418)
-        self.assertEqual(count(Config(rope=True)), 142_370)
-        self.assertEqual(count(Config(n_layers=2, d_model=32, d_mlp=128)), 20_370)
+        self.assertEqual(count(Config(rope=False)), 144_418)
+        self.assertEqual(count(Config()), 142_370)
+        self.assertEqual(count(Config(n_layers=2, d_model=32, d_mlp=128, rope=False)), 20_370)
         self.assertEqual(count(Config(n_layers=2, d_model=32, d_mlp=128, rope=True)), 19_346)
 
 
@@ -303,31 +298,41 @@ class Probe(unittest.TestCase):
         self.assertTrue(torch.equal(test, probe.split(1000, 0.2, seed=0)))
         self.assertFalse(torch.equal(test, probe.split(1000, 0.2, seed=1)))
 
-    def test_weighted_fit_and_r2(self):
-        generator = torch.Generator().manual_seed(7)
-        x = torch.randn(500, 10, generator=generator, dtype=torch.float64)
-        w = torch.rand(500, generator=generator, dtype=torch.float64)
-        y = x @ torch.randn(10, 3, generator=generator, dtype=torch.float64) + torch.tensor([1.0, -2.0, 0.5])
-        self.assertAlmostEqual(probe.weighted_r2(y, probe.weighted_fit(x, y, w)(x), w), 1.0, places=10)
-        ones = torch.ones(500, dtype=torch.float64)
-        noisy = y + torch.randn(500, 3, generator=generator, dtype=torch.float64)
-        prediction = probe.weighted_fit(x, noisy, ones)(x)
-        expected = 1 - ((noisy - prediction) ** 2).sum() / ((noisy - noisy.mean(0)) ** 2).sum()
-        self.assertAlmostEqual(probe.weighted_r2(noisy, prediction, ones), float(expected), places=12)
-        self.assertLess(probe.weighted_r2(noisy, torch.zeros_like(noisy) + noisy.mean(0), ones), 1e-12)
+    def test_ridge_cv_against_explicit_fold_predictions(self):
+        """Check chosen penalties, weighting and the refit against direct solves and held-out predictions."""
+        gen = torch.Generator().manual_seed(7)
+        x = torch.randn(60, 4, 8, generator=gen, dtype=torch.float64)
+        y = torch.randn(60, 4, 3, generator=gen, dtype=x.dtype)
+        y[:, :, 0] += 5 + 3 * x[:, :, 0]
+        weights = 0.1 + torch.rand(60, generator=gen, dtype=x.dtype)
+        folds = torch.randperm(len(x), generator=gen).tensor_split(5)
 
-    def test_ridge_path(self):
-        """The smallest penalty reproduces least squares; larger penalties shrink the predictions toward the mean."""
-        generator = torch.Generator().manual_seed(9)
-        x = torch.randn(500, 10, generator=generator, dtype=torch.float64)
-        w = torch.rand(500, generator=generator, dtype=torch.float64)
-        y = x @ torch.randn(10, 3, generator=generator, dtype=torch.float64) + torch.randn(500, 3, generator=generator,
-                                                                                           dtype=torch.float64)
-        predictors = probe.ridge_path(x, y, w)
-        torch.testing.assert_close(predictors[0](x), probe.weighted_fit(x, y, w)(x), rtol=0, atol=1e-6)
-        spread = [float(p(x).std(0).sum()) for p in predictors]
-        self.assertTrue(all(a >= b for a, b in zip(spread, spread[1:])))
-        self.assertLess(spread[-1], 0.5 * spread[0])
+        def solve(train, alpha):
+            a, b = x[train].flatten(0, 1), y[train].flatten(0, 1)
+            w = weights[train].repeat_interleave(x.shape[1])
+            w = w / w.sum()
+            xm, ym = w @ a, w @ b
+            ac = a - xm
+            cov = ac.T @ (w[:, None] * ac)
+            slope = torch.linalg.solve(cov + alpha * cov.diagonal().mean() * torch.eye(a.shape[1], dtype=x.dtype),
+                                       ac.T @ (w[:, None] * (b - ym)))
+            return torch.cat(((ym - xm @ slope)[None, :], slope))
+
+        errors = torch.zeros(len(probe.ALPHAS), 2, dtype=x.dtype)
+        for fold in folds:
+            train = torch.ones(len(x), dtype=torch.bool)
+            train[fold] = False
+            for k, alpha in enumerate(probe.ALPHAS):
+                coef = solve(train, alpha)
+                squared = (x[fold] @ coef[1:] + coef[0] - y[fold]).square()
+                error = (weights[fold, None, None] * squared).sum((0, 1))
+                errors[k] += torch.stack((error[0], error[1:].sum()))
+        coef, alphas = probe.fit_ridge_cv(x, y, weights, folds, [1, 2])
+        self.assertEqual(alphas, probe.ALPHAS[errors.argmin(0)].tolist())
+        self.assertNotEqual(*alphas)  # informative and noise targets choose different penalties
+        full = torch.arange(len(x))
+        expected = torch.cat((solve(full, alphas[0])[:, :1], solve(full, alphas[1])[:, 1:]), 1)
+        torch.testing.assert_close(coef, expected)
 
     def test_uniform_weighting(self):
         """eps > 0: uniformly random strings. eps = 0: process samples weighted by 1 / probability, which makes every
@@ -368,6 +373,7 @@ class Probe(unittest.TestCase):
             self.assertAlmostEqual(exact[f"next_r2_{weighting}"], 1.0, places=5)
             self.assertLess(exact[f"shuffled_r2_{weighting}"], 0.5)
             self.assertIsNone(exact[f"r2_by_position_{weighting}"][0])
+            self.assertIsNone(exact[f"next_r2_by_position_{weighting}"][1])
             self.assertTrue(all(r > 1 - 1e-5 for r in exact[f"r2_by_position_{weighting}"][1:]))
             for split in ("parity_", "early_", "late_"):  # no history is shared between fitting and scoring
                 self.assertGreater(exact[f"{split}r2_{weighting}"], 0.999, split)
@@ -390,7 +396,7 @@ class Probe(unittest.TestCase):
     def test_scripts_end_to_end(self):
         """train.py, probe.py (final and all checkpoints) and summarize.py on a tiny model for 30 steps."""
         with tempfile.TemporaryDirectory() as tmp:
-            run = Path(tmp) / "runs" / "L1_d16" / "eps0.05" / "s0"
+            run = Path(tmp) / "runs" / "L1_d16_rope" / "eps0.05" / "s0"
             python = [sys.executable]
             subprocess.run(python + [str(ROOT / "train.py"), "--layers", "1", "--d-model", "16", "--steps", "30",
                                      "--warmup", "5", "--log-every", "10", "--ckpt-every", "10", "--out", str(run)],
@@ -417,7 +423,7 @@ class Probe(unittest.TestCase):
             self.assertIn("### ε = 0.05", summary)
             self.assertIn("**Test KL and belief-state R² by probe split**", summary)
             self.assertIn("| model | test KL | random | odd/even | 1st → 2nd half | 2nd → 1st half |", summary)
-            self.assertIn(f"| 1 layers, d_model 16 | {final['test_kl']:.1e} | ".replace("e-0", "e-"), summary)
+            self.assertIn(f"| 1 layers, d_model 16, RoPE | {final['test_kl']:.1e} | ".replace("e-0", "e-"), summary)
             self.assertIn("| model | next-token distribution | shuffled belief state | untrained network |", summary)
             self.assertIn("<summary>Process weighting</summary>", summary)
             self.assertIn("Seeds per row: 1.", summary)

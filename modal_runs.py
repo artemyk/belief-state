@@ -48,7 +48,7 @@ def train_group(jobs: list[tuple], steps: int, tag: str, tail: int = 1) -> list[
         command = ["python", "train.py", "--layers", str(layers), "--d-model", str(d_model), "--eps", str(eps),
                    "--seed", str(seed), "--steps", str(steps), "--ckpt-every", str(10 * steps), "--out", str(out)]
         log = open(f"{out}.log", "w")
-        processes.append((out, log, subprocess.Popen(command + ["--rope"] * rope, cwd="/root/belief-state",
+        processes.append((out, log, subprocess.Popen(command + ["--rope" if rope else "--no-rope"], cwd="/root/belief-state",
                                                      stdout=log, stderr=subprocess.STDOUT)))
     for _, log, process in processes:
         process.wait()
@@ -65,7 +65,7 @@ def train_group(jobs: list[tuple], steps: int, tag: str, tail: int = 1) -> list[
 
 @app.local_entrypoint()
 def main(seeds: str = "0,1,2,3,4", per_gpu: int = 1, gpu: str = "L4", steps: int = 100_000,
-         tag: str = "masked_bos"):
+         tag: str = "standard_bos"):
     """Every model, eps 0.05 and 0, and the given seeds, in groups of per_gpu runs; each group mixes large and small
     runs, so that the groups finish at about the same time."""
     jobs = [(*model, eps, int(seed)) for model in MODELS for eps in (0.05, 0.0) for seed in seeds.split(",")]
