@@ -1,0 +1,91 @@
+{
+  "teacher_config": {
+    "attention_mass": false,
+    "attention_sums": false,
+    "bos_visible": true,
+    "vocab": 2,
+    "context": 32,
+    "d_model": 64,
+    "n_layers": 4,
+    "n_heads": 1,
+    "d_head": 8,
+    "d_mlp": 256,
+    "rope": true
+  },
+  "teacher_fingerprint": "a48d7d68f139ab3d440e7d6c8ba2bffbaf9b844ce43e8716b5bd07dfc6b18ce1",
+  "decoder_parameters": 8836,
+  "encoder_parameters": 5135,
+  "decoder_inputs": "normalized attention responses and current token only",
+  "fitting_code_commit": "119d4d5a8da78be93e73c47f71a141565aa891c2",
+  "heldout_metrics": {
+    "roundtrip_mse": {
+      "mean": 0.00047888606786727905,
+      "standard_error": 1.1470327081042342e-05
+    },
+    "single_kl": {
+      "mean": 0.032180339097976685,
+      "standard_error": 0.001016210881061852
+    },
+    "repeated_kl": {
+      "mean": 0.017166372388601303,
+      "standard_error": 0.0004700276185758412
+    },
+    "tracking_mse": {
+      "mean": 0.026913590729236603,
+      "standard_error": 0.0006811073981225491
+    }
+  },
+  "heldout_ghmm_r2": {
+    "decoded": 0.9919488430023193,
+    "roundtrip": 0.9922274947166443
+  },
+  "pca_variance_percent": [
+    9.290666393111463,
+    8.681136712814677
+  ],
+  "fitting_protocol": {
+    "decoder_inputs": "normalized attention responses and current-token coordinates only",
+    "encoder": "unrestricted affine map; fixed position metadata",
+    "fit": {
+      "dimension": 4,
+      "queries_per_head": 4,
+      "hidden": 64,
+      "horizon": 16,
+      "future_length": 4,
+      "spectral_samples": 512,
+      "decoder_steps": 20000,
+      "encoder_steps": 2000,
+      "joint_steps": 4000,
+      "batch_size": 64,
+      "decoder_lr": 0.001,
+      "joint_decoder_lr": 0.0001,
+      "encoder_lr": 0.0003,
+      "tracking_weight": 0.1,
+      "coordinate_weight": 0.1,
+      "roundtrip_weight": 0.1,
+      "validate_every": 400,
+      "seed": 20261030,
+      "max_outcomes": 65536,
+      "allow_shared_histories": false
+    },
+    "refinement": {
+      "steps": 10000,
+      "horizon": 16,
+      "batch_size": 64,
+      "lr": 0.0001,
+      "tracking_weight": 0.1,
+      "roundtrip_weight": 0.3,
+      "preservation_slack": 0.05,
+      "validate_every": 400,
+      "seed": 20261030
+    },
+    "initializer": "Existing teacher-fitted five-dimensional GHMM; fresh decoder and general encoder"
+  },
+  "files_sha256": {
+    "figures/mrrxor-kv-cache-pca.png": "67bdab96ee9649b5adee9717b8170571300c527f4357bca964a0d230d268f76a",
+    "figures/mrrxor-ghmm-decoder-encoder.png": "ac4de05e2d303c0a5ed77d6a0635eeca0decc964674e5f00ad18ed4427da21c5",
+    "figures/mrrxor-steering-trajectory.png": "4a1078241666a43473e8842a694d42a911b57e02bd8a6676ee9068a5499a305e",
+    "checkpoints/rope-visible-bos/teacher.pt": "41b033db7d93c9d23dc0d1dac18f9c0423b84e62945db51ff751318ec0d63604",
+    "checkpoints/rope-visible-bos/abstraction.pt": "ec72c2054f1a031a9d28f0603b13544768dc2934842b90bf21bec838a9766377"
+  }
+}
