@@ -9,11 +9,11 @@ trajectory. The trajectories are split 80/20, and
 the probe is scored by weighted R^2, pooled over the target coordinates.
 All splits use an affine ridge regression. The random split fits and scores all positive history lengths. The
 parity_ split fits odd lengths and scores even lengths, early_ fits 1–15 and scores 16–31, and late_ reverses
-the two halves. Random-split penalties minimize weighted validation squared error over five folds of whole
-training trajectories. Held-out-position penalties maximize mean validation R^2 over four groups of fitting
-positions, as in the original protocol: interleaved odd lengths for parity_, contiguous blocks for early_ and late_.
+the two halves. All penalties are selected by leaving out one fitting position at a time, fitting on the others,
+and measuring weighted mean squared prediction error at the omitted position. We choose the penalty with the
+lowest average error across positions, using only the training trajectories.
 The chosen penalty is used for a final fit to all training trajectories at the fitting lengths. The outer test
-trajectories and scoring lengths are used only for scoring.
+trajectories, and any lengths excluded from fitting, are used only for scoring.
 
 Histories are weighted in two ways, through the trajectory sample (used for both fitting and scoring):
   process  trajectories sampled from the process
@@ -77,7 +77,6 @@ def shuffled(beliefs: torch.Tensor, seed: int) -> torch.Tensor:
 
 
 ALPHAS = torch.logspace(-8, 1, 19, dtype=torch.float64)
-N_FOLDS = 5
 
 
 def ridge_path(gram: torch.Tensor, n_features: int) -> torch.Tensor:
@@ -96,21 +95,22 @@ def ridge_path(gram: torch.Tensor, n_features: int) -> torch.Tensor:
     return torch.cat((intercepts[:, None, :], slopes), 1)
 
 
-def fit_ridge_cv(x, y, weights, folds, target_sizes, *, hold_out_positions=False):
-    """Choose alpha by trajectory CV (pooled MSE) or position CV (mean R²), then refit on all fitting rows."""
-    # A fold's Gram matrix suffices both to fit ridge and to evaluate validation error without
-    # materializing predictions for every alpha. Position folds contain all training trajectories.
+def fit_ridge_cv(x, y, weights, target_sizes):
+    """Choose alpha by leave-one-position-out weighted MSE, then refit on all fitting rows.
+
+    x and y have shape (training trajectories, fitting positions, coordinates); weights has one
+    entry per trajectory. Each target block in y, described by target_sizes, selects its own alpha.
+    """
+    if x.shape[1] < 2:
+        raise ValueError("Leave-one-position-out validation needs at least two fitting positions.")
+    # A position's Gram matrix suffices both to fit ridge and to evaluate validation error without
+    # materializing predictions for every alpha. Each position includes all training trajectories.
     n_features = x.shape[-1]
     grams = []
-    for fold in folds:
-        if hold_out_positions:
-            features, targets = x[:, fold].flatten(0, 1), y[:, fold].flatten(0, 1)
-            row_weights = weights.repeat_interleave(len(fold))
-        else:
-            features, targets = x[fold].flatten(0, 1), y[fold].flatten(0, 1)
-            row_weights = weights[fold].repeat_interleave(x.shape[1])
+    for position in range(x.shape[1]):
+        features, targets = x[:, position], y[:, position]
         rows = torch.cat((torch.ones_like(features[:, :1]), features, targets), 1)
-        rows *= row_weights.sqrt()[:, None]
+        rows *= weights.sqrt()[:, None]
         grams.append(rows.T @ rows)
     total = torch.stack(grams).sum(0)
     cv_error = x.new_zeros(len(ALPHAS), len(target_sizes))
@@ -121,17 +121,8 @@ def fit_ridge_cv(x, y, weights, folds, target_sizes, *, hold_out_positions=False
         residual_map = torch.cat((coef, negative_identity), 1)
         squared_error = (residual_map * (validation @ residual_map)).sum(1)
         errors = torch.stack([block.sum(1) for block in squared_error.split(target_sizes, 1)], 1)
-        if hold_out_positions:
-            target_second = validation.diagonal()[1 + n_features:]
-            target_total = validation[0, 1 + n_features:]
-            centered = target_second - target_total.square() / validation[0, 0]
-            variation = torch.stack([block.sum() for block in centered.split(target_sizes)])
-            scale = torch.stack([block.abs().sum() for block in target_second.split(target_sizes)])
-            valid = variation > 32 * torch.finfo(x.dtype).eps * scale
-            # R² is undefined in a constant-target fold, so that fold does not select its target's alpha.
-            errors[:, valid] /= variation[valid]
-            errors[:, ~valid] = 0
-        cv_error += errors
+        cv_error += errors / validation[0, 0]
+    cv_error /= len(grams)
     best = cv_error.argmin(0).tolist()
     final = ridge_path(total, n_features)
     coefficients = torch.cat([block[k] for block, k in zip(final.split(target_sizes, 2), best)], 1)
@@ -163,24 +154,16 @@ def probe(model: Transformer, T: torch.Tensor, count: int = 8192, test_fraction:
         targets = {"": beliefs, "next_": mrrxor.next_token_probabilities(T, beliefs),
                    "shuffled_": shuffled(beliefs, seed)}
         stacked = torch.cat(list(targets.values()), -1)
-        fit_count = int((~test).sum())
-        if fit_count < N_FOLDS or not test.any():
-            raise ValueError("Need at least five training trajectories and one test trajectory.")
-        folds = torch.randperm(fit_count, generator=torch.Generator().manual_seed(seed)).tensor_split(N_FOLDS)
+        if not (~test).any() or not test.any():
+            raise ValueError("Need at least one training trajectory and one test trajectory.")
         all_positions = lengths > 0
         first_half = lengths < context // 2
         splits = {"": (all_positions, all_positions), "parity_": (lengths % 2 == 1, lengths % 2 == 0),
                   "early_": (first_half, ~first_half), "late_": (~first_half, first_half)}
         sizes = [value.shape[-1] for value in targets.values()]
         for split_name, (fit, evaluate) in splits.items():
-            cv_folds = folds
-            if split_name:
-                groups = ((lengths // 2) % 4 if split_name == "parity_" else
-                          (lengths % (context // 2)) // max(1, context // 8))
-                cv_folds = [torch.where(groups[fit] == group)[0] for group in groups[fit].unique()]
             coef, alphas = fit_ridge_cv(features[~test][:, fit], stacked[~test][:, fit],
-                                        weights[~test].double(), cv_folds, sizes,
-                                        hold_out_positions=bool(split_name))
+                                        weights[~test].double(), sizes)
             predictions = features[test][:, evaluate] @ coef[1:] + coef[0]
             w = row_weights[test][:, evaluate]
             for (prefix, target), pred, alpha in zip(targets.items(), predictions.split(sizes, -1), alphas):
@@ -239,9 +222,8 @@ def main() -> None:
         result = {"layers": model.cfg.n_layers, "d_model": model.cfg.d_model, "rope": model.cfg.rope,
                   "eps": float(meta["eps"]), "init_std": float(meta["init_std"]), "seed": int(meta["seed"]),
                   "steps": checkpoint["step"], "test_kl": test_kl,
-                  "probe_settings": {**settings, "trajectory_folds": N_FOLDS, "relative_alphas": ALPHAS.tolist(),
-                                     "random_cv": "five trajectory folds, pooled weighted MSE",
-                                     "held_out_position_cv": "four fitting-position groups, mean weighted R2"},
+                  "probe_settings": {**settings, "relative_alphas": ALPHAS.tolist(),
+                                     "cv": "leave-one-position-out, mean weighted MSE"},
                   **probe(model, T, **settings)}
         if name == "final":
             initial = untrained(model.cfg, float(meta["init_std"]), int(meta["seed"])).eval()

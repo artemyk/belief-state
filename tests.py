@@ -300,11 +300,12 @@ class Probe(unittest.TestCase):
         self.assertFalse(torch.equal(test, probe.split(1000, 0.2, seed=1)))
 
     def test_ridge_cv_against_explicit_fold_predictions(self):
-        """Verify trajectory-MSE and position-R² selection against independent weighted ridge solves."""
+        """Verify position-MSE selection and the full refit against independent weighted ridge solves."""
         gen = torch.Generator().manual_seed(7)
         x = torch.randn(60, 8, 8, generator=gen, dtype=torch.float64)
         y = torch.randn(60, 8, 3, generator=gen, dtype=x.dtype)
         y[:, :, 0] += 5 + 3 * x[:, :, 0]
+        y[:, 0, 0] = 3  # a constant-target position still contributes validation squared error
         weights = 0.1 + torch.rand(60, generator=gen, dtype=x.dtype)
 
         def solve(a, b, w, alpha):
@@ -316,50 +317,40 @@ class Probe(unittest.TestCase):
                                        ac.T @ (w[:, None] * (b - ym)))
             return torch.cat(((ym - xm @ slope)[None, :], slope))
 
-        for by_position in (False, True):
-            count = x.shape[1] if by_position else len(x)
-            folds = torch.randperm(count, generator=gen).tensor_split(4 if by_position else 5)
-            scores = torch.zeros(len(probe.ALPHAS), 2, dtype=x.dtype)
-            for fold in folds:
-                train = torch.ones(count, dtype=torch.bool)
-                train[fold] = False
-                if by_position:
-                    tx, ty = x[:, train], y[:, train]
-                    vx, vy = x[:, fold], y[:, fold]
-                    tw, vw = weights.repeat_interleave(int(train.sum())), weights.repeat_interleave(len(fold))
-                else:
-                    tx, ty, vx, vy = x[train], y[train], x[fold], y[fold]
-                    tw, vw = weights[train].repeat_interleave(x.shape[1]), weights[fold].repeat_interleave(x.shape[1])
-                for k, alpha in enumerate(probe.ALPHAS):
-                    coef = solve(tx.flatten(0, 1), ty.flatten(0, 1), tw, alpha)
-                    pred = vx.flatten(0, 1) @ coef[1:] + coef[0]
-                    actual = vy.flatten(0, 1)
-                    for j, (value, prediction) in enumerate(zip(actual.split([1, 2], 1), pred.split([1, 2], 1))):
-                        if by_position:
-                            scores[k, j] -= probe.weighted_r2(value, prediction, vw)
-                        else:
-                            scores[k, j] += vw @ (value - prediction).square().sum(1)
-            coef, alphas = probe.fit_ridge_cv(x, y, weights, folds, [1, 2], hold_out_positions=by_position)
-            self.assertEqual(alphas, probe.ALPHAS[scores.argmin(0)].tolist())
-            all_weights = weights.repeat_interleave(x.shape[1])
-            fits = [solve(x.flatten(0, 1), y.flatten(0, 1), all_weights, alpha) for alpha in alphas]
-            torch.testing.assert_close(coef, torch.cat((fits[0][:, :1], fits[1][:, 1:]), 1))
+        scores = torch.zeros(len(probe.ALPHAS), 2, dtype=x.dtype)
+        for position in range(x.shape[1]):
+            train = torch.arange(x.shape[1]) != position
+            tx, ty = x[:, train].flatten(0, 1), y[:, train].flatten(0, 1)
+            tw = weights.repeat_interleave(int(train.sum()))
+            for k, alpha in enumerate(probe.ALPHAS):
+                coef = solve(tx, ty, tw, alpha)
+                pred = x[:, position] @ coef[1:] + coef[0]
+                for j, error in enumerate((y[:, position] - pred).split([1, 2], 1)):
+                    scores[k, j] += weights @ error.square().sum(1) / weights.sum()
+        scores /= x.shape[1]
+        coef, alphas = probe.fit_ridge_cv(x, y, weights, [1, 2])
+        self.assertEqual(alphas, probe.ALPHAS[scores.argmin(0)].tolist())
+        all_weights = weights.repeat_interleave(x.shape[1])
+        fits = [solve(x.flatten(0, 1), y.flatten(0, 1), all_weights, alpha) for alpha in alphas]
+        torch.testing.assert_close(coef, torch.cat((fits[0][:, :1], fits[1][:, 1:]), 1))
 
-    def test_probe_validation_follows_held_out_axis(self):
-        """Odd/even validation holds out odd lengths, and late validation uses only 16–31."""
+    def test_probe_validation_uses_only_fitting_rows(self):
+        """All splits select alpha using only their fitting lengths and outer training trajectories."""
         T = mrrxor.transition_tensor(0.05)
         with patch.object(probe, "fit_ridge_cv", wraps=probe.fit_ridge_cv) as fits:
             probe.probe(BeliefModel(T), T, count=128)
-        for calls in (fits.call_args_list[:4], fits.call_args_list[4:]):
-            self.assertEqual([call.kwargs["hold_out_positions"] for call in calls], [False, True, True, True])
-            expected_groups = [
-                [[0, 4, 8, 12], [1, 5, 9, 13], [2, 6, 10, 14], [3, 7, 11, 15]],
-                [[0, 1, 2], [3, 4, 5, 6], [7, 8, 9, 10], [11, 12, 13, 14]],
-                [list(range(start, start + 4)) for start in range(0, 16, 4)],
-            ]
-            for call, groups in zip(calls[1:], expected_groups):
-                self.assertEqual([fold.tolist() for fold in call.args[3]], groups)
-                self.assertEqual(call.args[0].shape[0], 102)  # all outer training trajectories in every position fold
+        self.assertEqual(len(fits.call_args_list), 8)
+        train = ~probe.split(128, 0.2, seed=0)
+        expected_lengths = [list(range(1, 32)), list(range(1, 32, 2)), list(range(1, 16)), list(range(16, 32))]
+        for weighting, calls in zip(("uniform", "process"), (fits.call_args_list[:4], fits.call_args_list[4:])):
+            tokens, weights = probe.trajectories(T, 32, weighting, 128, seed=0)
+            beliefs = mrrxor.beliefs(T, tokens)
+            for call, lengths in zip(calls, expected_lengths):
+                x, y, w, sizes = call.args
+                self.assertEqual(x.shape[:2], (102, len(lengths)))
+                torch.testing.assert_close(y[:, :, :5], beliefs[train][:, lengths])
+                torch.testing.assert_close(w, weights[train].double())
+                self.assertEqual(sizes, [5, 2, 5])
 
     def test_uniform_weighting(self):
         """eps > 0: uniformly random strings. eps = 0: process samples weighted by 1 / probability, which makes every
