@@ -7,6 +7,27 @@
   "seed": 3,
   "steps": 100000,
   "test_kl": 0.00073269623296818,
+  "checkpoint_sha256": "6679801625d47f16df3d353dd771a9b5f31ccf8db0886f74d769fa7cdad75e8a",
+  "config": {
+    "vocab": 2,
+    "context": 32,
+    "d_model": 32,
+    "n_layers": 2,
+    "n_heads": 1,
+    "d_head": 8,
+    "d_mlp": 128,
+    "rope": false
+  },
+  "training_settings": {
+    "eps": "0.05",
+    "seed": "3",
+    "init_std": "0.1",
+    "context": "32",
+    "batch": "512",
+    "lr": "0.001",
+    "warmup": "1000",
+    "steps": "100000"
+  },
   "probe_settings": {
     "count": 8192,
     "test_fraction": 0.2,
@@ -32,7 +53,8 @@
       3.1622776601683795,
       10.0
     ],
-    "cv": "leave-one-position-out, mean weighted MSE"
+    "cv": "leave-one-position-out, mean weighted MSE",
+    "code_sha256": "96ec367e74104a589df1caa672976ead9f3a32fadfceae01237ead02773d3079"
   },
   "r2_uniform": 0.6408564212003982,
   "alpha_uniform": 0.1,

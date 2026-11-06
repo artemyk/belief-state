@@ -1,5 +1,5 @@
 #!/bin/sh
-# Train one model per mixing probability eps and seed (in parallel), then probe them and write results.md.
+# Train one model per mixing probability eps and seed (in parallel), then probe them and print the result tables.
 # Usage: ./run_sweep.sh [layers] [d_model] [rope|learned]   (default 4 64 rope; set PYTHON to choose the interpreter and SEEDS to
 # choose the seeds, by default "0 1 2 3 4")
 set -e

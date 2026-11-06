@@ -3,9 +3,11 @@
 Run from the repository root with `python tests.py` (about half a minute). The process and its Bayesian
 quantities are compared with a brute-force reference that enumerates hidden-state paths and is written independently
 of mrrxor.py. The model is checked for causality and for the features it returns. The probe is checked for the
-alignment of activations with beliefs, its two splits, its weighting, its ridge fit, and its controls. The last test
-runs train.py, probe.py and summarize.py end to end on a tiny model.
+alignment of activations with beliefs, all four splits, its weighting, its ridge fit, and its controls. End-to-end
+checks run train.py, probe.py and summarize.py on a tiny model and cover provenance, caching, and undefined scores.
 """
+import copy
+import hashlib
 import itertools
 import json
 import subprocess
@@ -299,6 +301,28 @@ class Probe(unittest.TestCase):
         self.assertTrue(torch.equal(test, probe.split(1000, 0.2, seed=0)))
         self.assertFalse(torch.equal(test, probe.split(1000, 0.2, seed=1)))
 
+    def test_cached_probe_requires_matching_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "s0.pt"
+            path.write_bytes(b"checkpoint contents")
+            checkpoint = {"config": vars(Config()), "args": {"seed": "0", "eps": "0.05"}}
+            settings = dict(count=128, test_fraction=0.2, seed=0)
+            metadata = probe.result_metadata(path, checkpoint, settings)
+            self.assertEqual(metadata["checkpoint_sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+            cached = path.with_suffix(".json")
+            self.assertFalse(probe.result_is_current(cached, metadata))
+            cached.write_text(json.dumps(metadata))
+            self.assertTrue(probe.result_is_current(cached, metadata))
+            changed = probe.result_metadata(path, checkpoint, {**settings, "seed": 1})
+            self.assertFalse(probe.result_is_current(cached, changed))
+            changed = copy.deepcopy(metadata)
+            changed["probe_settings"]["code_sha256"] = "changed implementation"
+            self.assertFalse(probe.result_is_current(cached, changed))
+            path.write_bytes(b"replacement checkpoint")
+            self.assertFalse(probe.result_is_current(cached, probe.result_metadata(path, checkpoint, settings)))
+            cached.write_text("{")
+            self.assertFalse(probe.result_is_current(cached, metadata))
+
     def test_ridge_cv_against_explicit_fold_predictions(self):
         """Verify position-MSE selection and the full refit against independent weighted ridge solves."""
         gen = torch.Generator().manual_seed(7)
@@ -436,6 +460,18 @@ class Probe(unittest.TestCase):
                 for weighting in ("uniform", "process"):
                     self.assertTrue(np.isfinite(result[f"{key}_{weighting}"]), key)
             self.assertEqual(len(list(run.glob("probe_step_*.json"))), 3)
+            cached = subprocess.run(python + [str(ROOT / "probe.py"), str(run), "--trajectories", "256",
+                                             "--checkpoint", "all"], check=True, capture_output=True, text=True)
+            self.assertEqual(cached.stdout, "")
+            stale_path = run / "probe_step_000010.json"
+            stale = json.loads(stale_path.read_text())
+            stale["probe_settings"]["code_sha256"] = "old implementation"
+            stale_path.write_text(json.dumps(stale))
+            refreshed = subprocess.run(python + [str(ROOT / "probe.py"), str(run), "--trajectories", "256",
+                                                "--checkpoint", "all"], check=True, capture_output=True, text=True)
+            self.assertEqual(len(refreshed.stdout.splitlines()), 1)
+            self.assertIn("step_000010", refreshed.stdout)
+            self.assertEqual(json.loads(stale_path.read_text())["probe_settings"], result["probe_settings"])
             summary = subprocess.run(python + [str(ROOT / "summarize.py")], check=True, capture_output=True,
                                      text=True, cwd=tmp).stdout
             self.assertIn("### ε = 0.05", summary)
@@ -445,6 +481,100 @@ class Probe(unittest.TestCase):
             self.assertIn("| model | next-token distribution | shuffled belief state | untrained network |", summary)
             self.assertIn("<summary>Process weighting</summary>", summary)
             self.assertIn("Seeds per row: 1.", summary)
+
+    def test_constant_target_reporting(self):
+        """At eps = 0.8 the next-bit distribution is constant, so the CLI and tables must handle undefined R²."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(context=8, n_layers=1, d_model=8, d_mlp=32)
+            model = untrained(cfg, 0.1, seed=0)
+            run = Path(tmp) / "runs/L1_d8_rope/eps0.8/s0"
+            run.parent.mkdir(parents=True)
+            torch.save({"config": vars(cfg), "args": {"eps": "0.8", "seed": "0", "init_std": "0.1"},
+                        "step": 0, "model": model.state_dict()}, f"{run}.pt")
+            completed = subprocess.run([sys.executable, str(ROOT / "probe.py"), str(run), "--trajectories", "128"],
+                                       check=True, capture_output=True, text=True)
+            self.assertIn("next-token undefined, undefined", completed.stdout)
+            result = json.loads(Path(f"{run}.json").read_text())
+            self.assertIsNone(result["next_r2_uniform"])
+            self.assertIsNone(result["next_r2_process"])
+            summary = subprocess.run([sys.executable, str(ROOT / "summarize.py")], cwd=tmp,
+                                     check=True, capture_output=True, text=True)
+            self.assertIn("undefined", summary.stdout)
+
+
+class Summary(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.paths = []
+        for seed in (0, 1):
+            path = self.root / f"runs/L1_d8_rope/eps0.05/s{seed}.pt"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # Only the file identity matters here; the reporting script does not load model weights.
+            path.write_bytes(f"checkpoint {seed}".encode())
+            checkpoint = {"config": vars(Config(n_layers=1, d_model=8, d_mlp=32)),
+                          "args": {"eps": "0.05", "seed": str(seed), "lr": "0.001"}}
+            result = {"layers": 1, "d_model": 8, "rope": True, "eps": 0.05, "seed": seed,
+                      "steps": 30, "test_kl": 0.01,
+                      **probe.result_metadata(path, checkpoint, dict(count=128, test_fraction=0.2, seed=0))}
+            for split in ("", "parity_", "early_", "late_"):
+                for prefix, target in (("", ""), ("", "next_"), ("", "shuffled_"), ("init_", "")):
+                    for weighting in ("uniform", "process"):
+                        result[f"{prefix}{split}{target}r2_{weighting}"] = 0.5 + 0.1 * seed
+            path = path.with_suffix(".json")
+            path.write_text(json.dumps(result))
+            self.paths.append(path)
+
+    def summarize(self):
+        return subprocess.run([sys.executable, str(ROOT / "summarize.py")], cwd=self.root,
+                              capture_output=True, text=True)
+
+    def test_rejects_incompatible_results(self):
+        path = self.paths[1]
+        original = json.loads(path.read_text())
+        cases = [(("probe_settings", "seed"), 1, "incompatible probe settings"),
+                 (("config", "context"), 64, "incompatible model or training settings"),
+                 (("training_settings", "lr"), "0.1", "incompatible model or training settings"),
+                 (("steps",), 100, "incompatible model or training settings"),
+                 (("checkpoint_sha256",), "wrong hash", "hash mismatch")]
+        for keys, value, message in cases:
+            with self.subTest(keys=keys):
+                result = copy.deepcopy(original)
+                field = result
+                for key in keys[:-1]:
+                    field = field[key]
+                field[keys[-1]] = value
+                path.write_text(json.dumps(result))
+                completed = self.summarize()
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIn(message, completed.stderr)
+                self.assertEqual(completed.stdout, "")
+
+    def test_rejects_duplicate_seeds_and_missing_provenance(self):
+        path = self.paths[1]
+        result = json.loads(path.read_text())
+        result["seed"], result["training_settings"]["seed"] = 0, "0"
+        path.write_text(json.dumps(result))
+        completed = self.summarize()
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("duplicate training seed", completed.stderr)
+        del result["checkpoint_sha256"]
+        path.write_text(json.dumps(result))
+        completed = self.summarize()
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("missing provenance", completed.stderr)
+
+    def test_prints_only_and_preserves_undefined_scores(self):
+        result = json.loads(self.paths[0].read_text())
+        result["r2_uniform"] = result["next_r2_uniform"] = None
+        self.paths[0].write_text(json.dumps(result))
+        (self.root / "README.md").write_text("Keep this document unchanged.\n")
+        before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        completed = self.summarize()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("undefined", completed.stdout)
+        self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
 
 
 if __name__ == "__main__":

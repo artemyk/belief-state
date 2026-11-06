@@ -20,7 +20,7 @@ The second table gives three controls for the random split, which use the same f
 - **Shuffled belief state:** the distinct belief states are randomly permuted among themselves. Histories with the same belief still share a target, but the targets no longer reflect the geometry of the beliefs, so this measures the R² the probe gets for an arbitrary function of the belief. For ε = 0, there are only 35 distinct beliefs and the network separates them, so with the random split any relabeling of them is about as decodable as the beliefs themselves.
 - **Untrained network:** the belief-state probe on the network at initialization.
 
-Entries are means over the seeds, with the standard deviation for the belief state. The tables weight histories *uniformly*: every sequence with positive probability counts equally. The collapsed tables use *process* weighting: trajectories are sampled from the process, so typical histories dominate.
+Entries are means over the seeds, with the standard deviation for the belief state. The tables use *uniform* weighting over complete length-32 trajectories with positive probability. At ε = 0, shorter prefixes are weighted by their numbers of supported continuations. The collapsed tables use *process* weighting: trajectories are sampled from the process, so typical histories dominate.
 
 ### ε = 0.05
 
@@ -180,7 +180,7 @@ For example, for the odd/even split, we fit on all odd lengths except 1 and vali
 
 We try 19 penalties, spaced by half-decades from 1e−8 to 10, expressed as multiples of the mean eigenvalue of the fitting-feature covariance. For every split, we refit the final probe on all fitting rows at the chosen penalty.
 
-Per-position R² is undefined when the target is constant, such as the next-bit probability after a single observation. These entries are stored as `null`.
+R² is undefined when the target is constant, such as the next-bit probability after a single observation. These entries are stored as `null` and displayed as `undefined`.
 
 ## Files
 
@@ -190,12 +190,11 @@ Per-position R² is undefined when the target is constant, such as the next-bit 
 | `model.py` | The transformer, with the number of layers, d_model, and learned or rotary position embeddings as parameters |
 | `train.py` | Training for a fixed number of steps, logging the KL from Bayes-optimal predictions to the model's |
 | `probe.py` | The held-out probes (random, odd/even and halves splits) and their controls, and the test KL |
-| `summarize.py` | Collects the probe results into the tables in `results.md` |
+| `summarize.py` | Checks the saved probe results and prints Markdown tables |
 | `run_sweep.sh` | Trains and probes ε = 0.05 and 0 with 5 seeds each (or the seeds in `SEEDS`), for one model size and kind of position embedding |
-| `modal_runs.py` | Trains and probes runs on [Modal](https://modal.com) GPUs instead of locally |
 | `tests.py` | Self-contained checks of the process, the model, the probe and the scripts |
 
-Each run in `runs/L<layers>_d<d_model>[_rope]/eps<ε>/` includes the final checkpoint (`s<seed>.pt`) and its probe results (`s<seed>.json`), including the penalty chosen for each split, target, and weighting. The untrained network is regenerated from its seed. Logs and intermediate checkpoints stay local.
+Each run in `runs/L<layers>_d<d_model>[_rope]/eps<ε>/` includes the final checkpoint (`s<seed>.pt`) and its probe results (`s<seed>.json`), including the penalty chosen for each split, target, and weighting. The results record SHA-256 hashes of the checkpoint and probe code, together with the model, training, and probe settings. Summarization verifies the checkpoints and checks that the runs being compared have consistent settings. The untrained network is regenerated from its seed. Logs and intermediate checkpoints stay local.
 
 Requirements: Python 3.10+, PyTorch (tested with 2.14), and Numba (tested with 0.68) with NumPy. Training uses Apple's MPS or CUDA when available, with the model compiled by `torch.compile` (on CUDA, replayed as CUDA graphs).
 
@@ -208,16 +207,14 @@ Requirements: Python 3.10+, PyTorch (tested with 2.14), and Numba (tested with 0
 ./run_sweep.sh 2 32 learned # small model with learned absolute position embeddings
 ```
 
-Alternatively, `modal run modal_runs.py::main` trains and probes all 40 runs on Modal GPUs; the file describes its options and how to copy the results back.
-
 To recreate the tables from the stored checkpoints:
 
 ```sh
 python probe.py runs/*/*/*.pt    # writes runs/<model>/eps<ε>/s<seed>.json
-python summarize.py              # writes results.md
+python summarize.py            # prints Markdown tables for the README
 ```
 
-To follow a run while it trains, `python probe.py runs/<model>/eps<ε>/s<seed> --checkpoint latest` probes the newest checkpoint, and `--checkpoint all` probes every checkpoint.
+To follow a run while it trains, `python probe.py runs/<model>/eps<ε>/s<seed> --checkpoint latest` probes the newest checkpoint. With `--checkpoint all`, existing results are reused when their checkpoint, probe code, and settings match; missing or stale results are recomputed.
 
 ## Tests
 

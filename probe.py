@@ -39,9 +39,10 @@ Usage: python probe.py runs/<model>/eps<eps>/s<seed>.pt [more runs] [--checkpoin
   final: probes <run>.pt and, as a baseline, the untrained network (regenerated from the run's seed), and writes
          <run>.json
   step_<step>: probes <run>/step_<step>.pt and writes <run>/probe_step_<step>.json
-  latest: the newest step checkpoint; all: every step checkpoint not yet probed
+  latest: the newest step checkpoint; all: every step checkpoint with missing or stale probe results
 """
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -196,8 +197,38 @@ def checkpoint_names(run: Path, checkpoint: str) -> list[str]:
     if checkpoint == "latest":
         return steps[-1:]
     if checkpoint == "all":
-        return [name for name in steps if not files(run, name)[1].exists()]
+        return steps
     return [checkpoint]
+
+
+def result_metadata(path: Path, checkpoint: dict, settings: dict) -> dict:
+    """Identify the exact checkpoint, recorded training recipe, and implementation used by the probe.
+
+    The code hash covers the model, process and probe sources. It identifies the code used for probing;
+    the checkpoint's training settings describe the original training run.
+    """
+    code = hashlib.sha256()
+    for name in ("model.py", "mrrxor.py", "probe.py"):
+        code.update(name.encode() + b"\0" + Path(__file__).with_name(name).read_bytes())
+    return {"checkpoint_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "config": checkpoint["config"], "training_settings": checkpoint["args"],
+            "probe_settings": {**settings, "relative_alphas": ALPHAS.tolist(),
+                               "cv": "leave-one-position-out, mean weighted MSE", "code_sha256": code.hexdigest()}}
+
+
+def result_is_current(path: Path, metadata: dict) -> bool:
+    """Reuse a cached probe only when its checkpoint, implementation, and settings match."""
+    if not path.exists():
+        return False
+    try:
+        result = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return False
+    return isinstance(result, dict) and all(result.get(key) == value for key, value in metadata.items())
+
+
+def format_r2(value: float | None) -> str:
+    return "undefined" if value is None else f"{value:.3f}"
 
 
 def main() -> None:
@@ -214,6 +245,9 @@ def main() -> None:
     for run, name in ((run, name) for run in runs for name in checkpoint_names(run, args.checkpoint)):
         checkpoint_path, results_path = files(run, name)
         model, checkpoint = load(checkpoint_path)
+        metadata = result_metadata(checkpoint_path, checkpoint, settings)
+        if args.checkpoint == "all" and result_is_current(results_path, metadata):
+            continue
         meta = checkpoint["args"]
         T = mrrxor.transition_tensor(float(meta["eps"]))
         test_tokens, test_optimal = mrrxor.test_set(T, model.cfg.context)
@@ -222,19 +256,17 @@ def main() -> None:
         result = {"layers": model.cfg.n_layers, "d_model": model.cfg.d_model, "rope": model.cfg.rope,
                   "eps": float(meta["eps"]), "init_std": float(meta["init_std"]), "seed": int(meta["seed"]),
                   "steps": checkpoint["step"], "test_kl": test_kl,
-                  "probe_settings": {**settings, "relative_alphas": ALPHAS.tolist(),
-                                     "cv": "leave-one-position-out, mean weighted MSE"},
-                  **probe(model, T, **settings)}
+                  **metadata, **probe(model, T, **settings)}
         if name == "final":
             initial = untrained(model.cfg, float(meta["init_std"]), int(meta["seed"])).eval()
             result.update({f"init_{key}": value for key, value in probe(initial, T, **settings).items()})
         results_path.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n")
         print(f"{run.parent.parent.name}/{run.parent.name}/{run.name} ({name}, step {result['steps']}): "
-              f"test KL {test_kl:.2e}, pooled held-out R^2 {result['r2_uniform']:.3f} (uniform), "
-              f"{result['r2_process']:.3f} (process); next-token "
-              f"{result['next_r2_uniform']:.3f}, {result['next_r2_process']:.3f}; shuffled "
-              f"{result['shuffled_r2_uniform']:.3f}, {result['shuffled_r2_process']:.3f}"
-              + (f"; untrained {result['init_r2_uniform']:.3f}, {result['init_r2_process']:.3f}"
+              f"test KL {test_kl:.2e}, pooled held-out R^2 {format_r2(result['r2_uniform'])} (uniform), "
+              f"{format_r2(result['r2_process'])} (process); next-token "
+              f"{format_r2(result['next_r2_uniform'])}, {format_r2(result['next_r2_process'])}; shuffled "
+              f"{format_r2(result['shuffled_r2_uniform'])}, {format_r2(result['shuffled_r2_process'])}"
+              + (f"; untrained {format_r2(result['init_r2_uniform'])}, {format_r2(result['init_r2_process'])}"
                  if name == "final" else ""), flush=True)
 
 
