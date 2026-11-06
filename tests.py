@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import numpy as np
@@ -299,17 +300,14 @@ class Probe(unittest.TestCase):
         self.assertFalse(torch.equal(test, probe.split(1000, 0.2, seed=1)))
 
     def test_ridge_cv_against_explicit_fold_predictions(self):
-        """Check chosen penalties, weighting and the refit against direct solves and held-out predictions."""
+        """Verify trajectory-MSE and position-R² selection against independent weighted ridge solves."""
         gen = torch.Generator().manual_seed(7)
-        x = torch.randn(60, 4, 8, generator=gen, dtype=torch.float64)
-        y = torch.randn(60, 4, 3, generator=gen, dtype=x.dtype)
+        x = torch.randn(60, 8, 8, generator=gen, dtype=torch.float64)
+        y = torch.randn(60, 8, 3, generator=gen, dtype=x.dtype)
         y[:, :, 0] += 5 + 3 * x[:, :, 0]
         weights = 0.1 + torch.rand(60, generator=gen, dtype=x.dtype)
-        folds = torch.randperm(len(x), generator=gen).tensor_split(5)
 
-        def solve(train, alpha):
-            a, b = x[train].flatten(0, 1), y[train].flatten(0, 1)
-            w = weights[train].repeat_interleave(x.shape[1])
+        def solve(a, b, w, alpha):
             w = w / w.sum()
             xm, ym = w @ a, w @ b
             ac = a - xm
@@ -318,21 +316,50 @@ class Probe(unittest.TestCase):
                                        ac.T @ (w[:, None] * (b - ym)))
             return torch.cat(((ym - xm @ slope)[None, :], slope))
 
-        errors = torch.zeros(len(probe.ALPHAS), 2, dtype=x.dtype)
-        for fold in folds:
-            train = torch.ones(len(x), dtype=torch.bool)
-            train[fold] = False
-            for k, alpha in enumerate(probe.ALPHAS):
-                coef = solve(train, alpha)
-                squared = (x[fold] @ coef[1:] + coef[0] - y[fold]).square()
-                error = (weights[fold, None, None] * squared).sum((0, 1))
-                errors[k] += torch.stack((error[0], error[1:].sum()))
-        coef, alphas = probe.fit_ridge_cv(x, y, weights, folds, [1, 2])
-        self.assertEqual(alphas, probe.ALPHAS[errors.argmin(0)].tolist())
-        self.assertNotEqual(*alphas)  # informative and noise targets choose different penalties
-        full = torch.arange(len(x))
-        expected = torch.cat((solve(full, alphas[0])[:, :1], solve(full, alphas[1])[:, 1:]), 1)
-        torch.testing.assert_close(coef, expected)
+        for by_position in (False, True):
+            count = x.shape[1] if by_position else len(x)
+            folds = torch.randperm(count, generator=gen).tensor_split(4 if by_position else 5)
+            scores = torch.zeros(len(probe.ALPHAS), 2, dtype=x.dtype)
+            for fold in folds:
+                train = torch.ones(count, dtype=torch.bool)
+                train[fold] = False
+                if by_position:
+                    tx, ty = x[:, train], y[:, train]
+                    vx, vy = x[:, fold], y[:, fold]
+                    tw, vw = weights.repeat_interleave(int(train.sum())), weights.repeat_interleave(len(fold))
+                else:
+                    tx, ty, vx, vy = x[train], y[train], x[fold], y[fold]
+                    tw, vw = weights[train].repeat_interleave(x.shape[1]), weights[fold].repeat_interleave(x.shape[1])
+                for k, alpha in enumerate(probe.ALPHAS):
+                    coef = solve(tx.flatten(0, 1), ty.flatten(0, 1), tw, alpha)
+                    pred = vx.flatten(0, 1) @ coef[1:] + coef[0]
+                    actual = vy.flatten(0, 1)
+                    for j, (value, prediction) in enumerate(zip(actual.split([1, 2], 1), pred.split([1, 2], 1))):
+                        if by_position:
+                            scores[k, j] -= probe.weighted_r2(value, prediction, vw)
+                        else:
+                            scores[k, j] += vw @ (value - prediction).square().sum(1)
+            coef, alphas = probe.fit_ridge_cv(x, y, weights, folds, [1, 2], hold_out_positions=by_position)
+            self.assertEqual(alphas, probe.ALPHAS[scores.argmin(0)].tolist())
+            all_weights = weights.repeat_interleave(x.shape[1])
+            fits = [solve(x.flatten(0, 1), y.flatten(0, 1), all_weights, alpha) for alpha in alphas]
+            torch.testing.assert_close(coef, torch.cat((fits[0][:, :1], fits[1][:, 1:]), 1))
+
+    def test_probe_validation_follows_held_out_axis(self):
+        """Odd/even validation holds out odd lengths, and late validation uses only 16–31."""
+        T = mrrxor.transition_tensor(0.05)
+        with patch.object(probe, "fit_ridge_cv", wraps=probe.fit_ridge_cv) as fits:
+            probe.probe(BeliefModel(T), T, count=128)
+        for calls in (fits.call_args_list[:4], fits.call_args_list[4:]):
+            self.assertEqual([call.kwargs["hold_out_positions"] for call in calls], [False, True, True, True])
+            expected_groups = [
+                [[0, 4, 8, 12], [1, 5, 9, 13], [2, 6, 10, 14], [3, 7, 11, 15]],
+                [[0, 1, 2], [3, 4, 5, 6], [7, 8, 9, 10], [11, 12, 13, 14]],
+                [list(range(start, start + 4)) for start in range(0, 16, 4)],
+            ]
+            for call, groups in zip(calls[1:], expected_groups):
+                self.assertEqual([fold.tolist() for fold in call.args[3]], groups)
+                self.assertEqual(call.args[0].shape[0], 102)  # all outer training trajectories in every position fold
 
     def test_uniform_weighting(self):
         """eps > 0: uniformly random strings. eps = 0: process samples weighted by 1 / probability, which makes every

@@ -30,10 +30,10 @@ Entries are means over the seeds, with the standard deviation for the belief sta
 
 | model | test KL | random | odd/even | 1st → 2nd half | 2nd → 1st half |
 |---|---:|---:|---:|---:|---:|
-| large | 6.1e-5 | 0.92 ± 0.03 | 0.31 ± 0.43 | -3.02 ± 2.27 | -1.93 ± 2.01 |
-| small | 8.9e-4 | 0.68 ± 0.09 | 0.25 ± 0.18 | -2.92 ± 4.08 | -6.77 ± 12.78 |
-| large, RoPE | 9.5e-5 | 0.98 ± 0.00 | 0.21 ± 0.84 | 0.97 ± 0.01 | -340.44 ± 208.01 |
-| small, RoPE | 1.9e-3 | 0.74 ± 0.05 | 0.71 ± 0.04 | 0.70 ± 0.05 | -148.48 ± 91.02 |
+| large | 6.1e-5 | 0.92 ± 0.03 | 0.85 ± 0.05 | 0.76 ± 0.05 | 0.60 ± 0.23 |
+| small | 8.9e-4 | 0.68 ± 0.09 | 0.60 ± 0.10 | 0.49 ± 0.08 | 0.52 ± 0.06 |
+| large, RoPE | 9.5e-5 | 0.98 ± 0.00 | 0.97 ± 0.01 | 0.93 ± 0.02 | -340.44 ± 208.00 |
+| small, RoPE | 1.9e-3 | 0.74 ± 0.05 | 0.70 ± 0.03 | 0.64 ± 0.02 | -148.48 ± 91.02 |
 
 **R² of the controls, random split**
 
@@ -51,10 +51,10 @@ Entries are means over the seeds, with the standard deviation for the belief sta
 
 | model | test KL | random | odd/even | 1st → 2nd half | 2nd → 1st half |
 |---|---:|---:|---:|---:|---:|
-| large | 6.1e-5 | 0.91 ± 0.04 | 0.21 ± 0.63 | -2.60 ± 1.49 | -2.94 ± 3.48 |
-| small | 8.9e-4 | 0.64 ± 0.10 | 0.22 ± 0.25 | -1.82 ± 2.14 | -12.78 ± 26.88 |
-| large, RoPE | 9.5e-5 | 0.97 ± 0.01 | -0.46 ± 1.89 | 0.96 ± 0.01 | -382.30 ± 213.87 |
-| small, RoPE | 1.9e-3 | 0.69 ± 0.03 | 0.66 ± 0.02 | 0.64 ± 0.03 | -203.26 ± 186.16 |
+| large | 6.1e-5 | 0.91 ± 0.04 | 0.83 ± 0.07 | 0.74 ± 0.08 | 0.53 ± 0.35 |
+| small | 8.9e-4 | 0.64 ± 0.10 | 0.56 ± 0.11 | 0.41 ± 0.08 | 0.50 ± 0.06 |
+| large, RoPE | 9.5e-5 | 0.97 ± 0.01 | 0.95 ± 0.02 | 0.91 ± 0.05 | -382.30 ± 213.87 |
+| small, RoPE | 1.9e-3 | 0.69 ± 0.03 | 0.65 ± 0.03 | 0.56 ± 0.03 | -203.26 ± 186.16 |
 
 **R² of the controls, random split**
 
@@ -72,18 +72,18 @@ Entries are means over the seeds, with the standard deviation for the belief sta
 
 | split | model | next-token distribution | shuffled belief state | untrained network |
 |---|---|---:|---:|---:|
-| odd/even | large | 0.99 | -1.30 | -23.57 |
-| odd/even | small | 0.94 | -1.93 | -6.63 |
-| odd/even | large, RoPE | 0.98 | -11.53 | -0.34 |
-| odd/even | small, RoPE | 0.98 | -0.11 | 0.18 |
-| 1st → 2nd half | large | 0.97 | -36.62 | -53.98 |
-| 1st → 2nd half | small | 0.81 | -17.39 | -8.81 |
-| 1st → 2nd half | large, RoPE | 1.00 | -0.07 | -0.52 |
-| 1st → 2nd half | small, RoPE | 0.97 | -0.04 | 0.13 |
-| 2nd → 1st half | large | 0.96 | 0.00 | -12.69 |
-| 2nd → 1st half | small | 0.90 | 0.00 | -4.10 |
-| 2nd → 1st half | large, RoPE | -6.67 | 0.00 | -63.16 |
-| 2nd → 1st half | small, RoPE | -3.91 | 0.00 | -12.18 |
+| odd/even | large | 1.00 | -0.01 | 0.16 |
+| odd/even | small | 0.97 | -0.01 | 0.16 |
+| odd/even | large, RoPE | 1.00 | -0.02 | 0.22 |
+| odd/even | small, RoPE | 0.97 | -0.01 | 0.23 |
+| 1st → 2nd half | large | 0.99 | -0.01 | 0.15 |
+| 1st → 2nd half | small | 0.96 | 0.00 | 0.15 |
+| 1st → 2nd half | large, RoPE | 1.00 | -0.01 | 0.16 |
+| 1st → 2nd half | small, RoPE | 0.97 | -0.01 | 0.17 |
+| 2nd → 1st half | large | 0.99 | 0.00 | 0.18 |
+| 2nd → 1st half | small | 0.98 | 0.00 | 0.18 |
+| 2nd → 1st half | large, RoPE | -6.67 | 0.00 | -27.61 |
+| 2nd → 1st half | small, RoPE | -3.91 | 0.00 | -7.11 |
 
 </details>
 
@@ -97,10 +97,10 @@ Entries are means over the seeds, with the standard deviation for the belief sta
 
 | model | test KL | random | odd/even | 1st → 2nd half | 2nd → 1st half |
 |---|---:|---:|---:|---:|---:|
-| large | 1.1e-6 | 0.87 ± 0.05 | -7.33 ± 8.33 | -94.33 ± 199.96 | -39.88 ± 79.54 |
-| small | 2.0e-4 | 0.53 ± 0.08 | -0.50 ± 0.57 | -2.31 ± 3.83 | -5.83 ± 4.07 |
-| large, RoPE | 4.5e-6 | 0.93 ± 0.03 | 0.74 ± 0.18 | 0.86 ± 0.10 | -154.47 ± 105.37 |
-| small, RoPE | 1.6e-3 | 0.64 ± 0.04 | 0.63 ± 0.04 | 0.60 ± 0.04 | -76.83 ± 107.70 |
+| large | 1.1e-6 | 0.87 ± 0.05 | 0.71 ± 0.07 | 0.61 ± 0.10 | 0.40 ± 0.14 |
+| small | 2.0e-4 | 0.53 ± 0.08 | 0.45 ± 0.11 | 0.36 ± 0.07 | -0.16 ± 1.13 |
+| large, RoPE | 4.5e-6 | 0.93 ± 0.03 | 0.89 ± 0.04 | 0.74 ± 0.08 | -135.82 ± 129.16 |
+| small, RoPE | 1.6e-3 | 0.64 ± 0.04 | 0.62 ± 0.03 | 0.48 ± 0.06 | -76.83 ± 107.70 |
 
 **R² of the controls, random split**
 
@@ -118,10 +118,10 @@ Entries are means over the seeds, with the standard deviation for the belief sta
 
 | model | test KL | random | odd/even | 1st → 2nd half | 2nd → 1st half |
 |---|---:|---:|---:|---:|---:|
-| large | 1.1e-6 | 0.87 ± 0.05 | -7.35 ± 8.35 | -94.06 ± 199.33 | -40.62 ± 81.14 |
-| small | 2.0e-4 | 0.53 ± 0.08 | -0.49 ± 0.56 | -2.30 ± 3.83 | -5.83 ± 4.08 |
-| large, RoPE | 4.5e-6 | 0.93 ± 0.03 | 0.74 ± 0.18 | 0.86 ± 0.10 | -154.51 ± 105.52 |
-| small, RoPE | 1.6e-3 | 0.64 ± 0.04 | 0.63 ± 0.04 | 0.60 ± 0.04 | -76.70 ± 107.41 |
+| large | 1.1e-6 | 0.87 ± 0.05 | 0.71 ± 0.07 | 0.61 ± 0.10 | 0.40 ± 0.14 |
+| small | 2.0e-4 | 0.53 ± 0.08 | 0.45 ± 0.11 | 0.36 ± 0.07 | -0.16 ± 1.13 |
+| large, RoPE | 4.5e-6 | 0.93 ± 0.03 | 0.89 ± 0.04 | 0.74 ± 0.08 | -135.86 ± 129.30 |
+| small, RoPE | 1.6e-3 | 0.64 ± 0.04 | 0.62 ± 0.03 | 0.48 ± 0.06 | -76.70 ± 107.41 |
 
 **R² of the controls, random split**
 
@@ -139,18 +139,18 @@ Entries are means over the seeds, with the standard deviation for the belief sta
 
 | split | model | next-token distribution | shuffled belief state | untrained network |
 |---|---|---:|---:|---:|
-| odd/even | large | -0.73 | -67.66 | -14.36 |
-| odd/even | small | 0.20 | -1.26 | -4.18 |
-| odd/even | large, RoPE | 0.96 | 0.02 | -1.04 |
-| odd/even | small, RoPE | 0.92 | 0.44 | 0.02 |
-| 1st → 2nd half | large | -4.30 | -114.00 | -38.96 |
-| 1st → 2nd half | small | -0.97 | -64.93 | -4.48 |
-| 1st → 2nd half | large, RoPE | 0.99 | 0.63 | -0.90 |
-| 1st → 2nd half | small, RoPE | 0.91 | 0.49 | 0.02 |
-| 2nd → 1st half | large | 0.72 | -9.58 | -5.77 |
-| 2nd → 1st half | small | 0.78 | -0.99 | -1.80 |
-| 2nd → 1st half | large, RoPE | -2.48 | -90.03 | -280.33 |
-| 2nd → 1st half | small, RoPE | -2.21 | -37.76 | -28.70 |
+| odd/even | large | 0.98 | 0.58 | 0.08 |
+| odd/even | small | 0.92 | 0.40 | 0.08 |
+| odd/even | large, RoPE | 0.99 | 0.65 | 0.11 |
+| odd/even | small, RoPE | 0.91 | 0.46 | 0.12 |
+| 1st → 2nd half | large | 0.98 | 0.57 | 0.07 |
+| 1st → 2nd half | small | 0.94 | 0.37 | 0.07 |
+| 1st → 2nd half | large, RoPE | 0.99 | 0.67 | 0.07 |
+| 1st → 2nd half | small, RoPE | 0.92 | 0.47 | 0.07 |
+| 2nd → 1st half | large | 0.93 | 0.25 | 0.11 |
+| 2nd → 1st half | small | 0.83 | -0.15 | 0.11 |
+| 2nd → 1st half | large, RoPE | -2.48 | -90.03 | -11.97 |
+| 2nd → 1st half | small, RoPE | -2.20 | -37.75 | -2.98 |
 
 </details>
 
@@ -170,7 +170,7 @@ The late-to-early split tests extrapolation across history lengths. At ε = 0, R
 
 **Training.** The network reads a beginning-of-sequence (BOS) token followed by the first 31 tokens of a sequence, so that its 32 outputs predict all 32 tokens, the first included, and together give the probability of the whole sequence. BOS supplies an ordinary key and value that later positions can attend to. This allows RoPE to distinguish repeated-token histories such as `1` and `11111`, whose Bayes-optimal next-token distributions differ. Shai et al. (2024) used no BOS token, so their first output predicts the second token. The loss is the cross entropy of each token given the ones before it, averaged over the 32 tokens, on batches of 512 sequences sampled from the stationary process. Adam with learning rate 1e-3 (otherwise PyTorch defaults), linear warmup over 1,000 steps, then cosine decay to 1e-5 at step 100,000, where training stops. The *test KL*, the KL divergence from the exact Bayes-optimal next-token distribution to the model's prediction averaged over all tokens of a fixed, separately sampled set of 4,096 sequences, is logged every 1,000 steps. Shai et al. (2024) instead trained with SGD (learning rate 0.01, batch 64).
 
-**Probe.** The features at each position are the residual stream at every layer as the network reads it: the LayerNorm-ed input of each block and the LayerNorm-ed output of the last block (the input to the unembedding), (layers + 1) × d_model features in all, 320 for the large model and 96 for the small one. Position n has read the first n tokens, n = 1, …, 31, and its target is the belief after those n tokens. Position 0, which reads only BOS, is not probed: it has no history, and its belief is the stationary distribution in every trajectory. One affine probe is *pooled* over all positions, as in Shai et al. (2024). We draw 8,192 trajectories of length 32 and split them 80/20 into training and test sets. R² is computed on held-out rows, pooled over the coordinates of the target; Shai et al. (2024) report in-sample fits, with a cross-validation check in their appendix. All four splits use ridge regression with an unpenalized intercept. We divide the training trajectories into five folds (probe seed 0). For each target and weighting we choose the penalty that minimizes pooled, weighted squared prediction error on the held-out folds at the fitting lengths, then refit on all training trajectories at those lengths. The 19 candidate penalties are spaced by half-decades from 1e−8 to 10, expressed as multiples of the mean eigenvalue of the fitting-feature covariance. In the late-to-early split, both fitting and penalty selection use only lengths 16–31. The scores on lengths 1–15 are reported as measured. A per-position R² is undefined when the target is constant, such as the next-bit probability after a single observation. These entries are stored as `null`.
+**Probe.** The features at each position are the residual stream at every layer as the network reads it: the LayerNorm-ed input of each block and the LayerNorm-ed output of the last block (the input to the unembedding), (layers + 1) × d_model features in all, 320 for the large model and 96 for the small one. Position n has read the first n tokens, n = 1, …, 31, and its target is the belief after those n tokens. Position 0, which reads only BOS, is not probed: it has no history, and its belief is the stationary distribution in every trajectory. One affine probe is *pooled* over all positions, as in Shai et al. (2024). We draw 8,192 trajectories of length 32 and split them 80/20 into training and test sets. R² is computed on held-out rows, pooled over the coordinates of the target; Shai et al. (2024) report in-sample fits, with a cross-validation check in their appendix. All four splits use ridge regression with an unpenalized intercept. For the random split, we minimize pooled, weighted validation squared error over five folds of whole training trajectories (probe seed 0). For the held-out-position splits, we choose the penalty by maximizing mean weighted validation R² over four groups of fitting positions in the training trajectories. The odd/even groups are {1, 9, 17, 25}, {3, 11, 19, 27}, {5, 13, 21, 29}, and {7, 15, 23, 31}. The halves use contiguous blocks, {1, 2, 3}, {4, …, 7}, … for early fitting and {16, …, 19}, … for late fitting. This validates transfer to unseen lengths within the fitting range. Each target and weighting has its own selected penalty, followed by a refit on all fitting rows. The 19 candidate penalties are spaced by half-decades from 1e−8 to 10, expressed as multiples of the mean eigenvalue of the fitting-feature covariance. In the late-to-early split, both fitting and penalty selection use only lengths 16–31. The scores on lengths 1–15 are reported as measured. A per-position R² is undefined when the target is constant, such as the next-bit probability after a single observation. These entries are stored as `null`.
 
 ## Files
 
