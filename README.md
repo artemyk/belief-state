@@ -10,17 +10,17 @@ We compare large (4 layers, d_model 64) and small (2 layers, d_model 32) transfo
 
 For each ε, the first table gives the *test KL*, the KL divergence from the Bayes-optimal next-token distribution to the model's at the end of training, and the held-out R² of a linear probe from the residual stream to the belief state, the posterior over the five hidden states given the history. The probe is scored on four splits of its rows:
 
-- **Random:** fitted on all positions of 80% of the trajectories and scored on all positions of the other 20%.
+- **Random:** fitted on history lengths 1–31 of 80% of the trajectories and scored at the same lengths on the other 20%.
 - **Odd/even:** fitted on the odd positions (history lengths 1, 3, …, 31) of the training trajectories and scored on the even positions (2, 4, …, 30) of the test trajectories. No history is then shared between fitting and scoring, and the probe has to carry over to positions it has not seen.
 - **1st → 2nd half:** fitted on history lengths 1–15 and scored on lengths 16–31, so that the probe has to carry over to positions farther from those it was fitted on. **2nd → 1st half** is the reverse.
 
-The second table gives three controls for the random split, which use the same features, fit, and held-out rows; those for the other splits are collapsed below it:
+The second table gives three controls for the random split, each fitted and scored using the same procedure. Controls for the other splits are shown in a collapsed table below:
 
 - **Next-token distribution:** the target is the Bayes-optimal next-token distribution, which the network is trained to output.
-- **Shuffled belief state:** the distinct belief states are randomly permuted among themselves. Histories with the same belief still share a target, but the targets no longer reflect the geometry of the beliefs, so this measures the R² the probe gets for an arbitrary function of the belief. For ε = 0, there are only 35 distinct beliefs and the network separates them, so with the random split any relabeling of them is about as decodable as the beliefs themselves.
+- **Shuffled belief state:** the distinct belief states are randomly permuted among themselves. Histories with the same belief still share a target, but the targets no longer reflect the geometry of the beliefs. This measures the R² the probe gets for an arbitrary relabeling of the beliefs. At ε = 0, there are 35 distinct beliefs after nonempty histories.
 - **Untrained network:** the belief-state probe on the network at initialization.
 
-Entries are means over the seeds, with the standard deviation for the belief state. The tables use *uniform* weighting over complete length-32 trajectories with positive probability. At ε = 0, shorter prefixes are weighted by their numbers of supported continuations. The collapsed tables use *process* weighting: trajectories are sampled from the process, so typical histories dominate.
+Entries are means over the seeds, with the standard deviation for the belief state. Probe scores use *uniform* weighting over complete length-32 trajectories with positive probability. At ε = 0, shorter prefixes are weighted by their numbers of supported continuations. The tables labeled “Process weighting” instead sample trajectories from the process, so typical histories dominate. Test KL always uses sequences sampled from the process.
 
 ### ε = 0.05
 
@@ -164,7 +164,9 @@ The late-to-early split tests extrapolation across history lengths. At ε = 0, R
 
 **Mixing probabilities.** We run ε = 0.05 and ε = 0. With ε = 0.05, every binary sequence has positive probability, and the beliefs form a fractal set. With ε = 0, supported histories obey the XOR constraint, and the belief takes 36 distinct values, including the initial one.
 
-**Models.** The large model is that of Shai et al. (2024), Appendix A.6: 4 layers, d_model 64, one attention head of dimension 8, ReLU MLPs of width 256, pre-LayerNorm, learned positional embeddings, causal attention, and no dropout (144k parameters). The small model has 2 layers, d_model 32, MLP width 128, and the same attention head (20k parameters). The RoPE models are the large and small ones with rotary position embeddings (Su et al., 2021) on the queries and keys in place of the learned positional embeddings (142k and 19k parameters). Every weight matrix and embedding is drawn from N(0, σ²) with σ = 0.1; biases start at 0, and LayerNorm at gain 1 and bias 0.
+**Models.** The large model is that of Shai et al. (2024), Appendix A.6: 4 layers, d_model 64, one attention head of dimension 8, ReLU MLPs of width 256, pre-LayerNorm, learned positional embeddings, causal attention, and no dropout (144k parameters). The small model has 2 layers, d_model 32, MLP width 128, and the same attention head (20k parameters).
+
+The RoPE models are the large and small ones with rotary position embeddings (Su et al., 2021) on the queries and keys in place of the learned positional embeddings (142k and 19k parameters). Every weight matrix and embedding is drawn from N(0, σ²) with σ = 0.1; biases start at 0, and LayerNorm at gain 1 and bias 0.
 
 **Training.** The network reads a beginning-of-sequence (BOS) token followed by the first 31 tokens of a sequence, so that its 32 outputs predict all 32 tokens. The loss is the mean next-token cross entropy on batches of 512 sequences sampled from the stationary process.
 
@@ -172,13 +174,13 @@ We use Adam with learning rate 1e-3 (otherwise PyTorch defaults), linear warmup 
 
 **Probe.** The features are the LayerNorm-ed input of each block and the LayerNorm-ed output of the last block, giving 320 features for the large model and 96 for the small one. At each history length n = 1, …, 31, the target is the Bayesian belief after the first n tokens.
 
-We draw 8,192 trajectories of length 32 and split them 80/20 into training and test sets (probe seed 0). For each split, we fit one affine ridge probe shared across its fitting positions, with an unpenalized intercept. R² is computed on the held-out rows, pooled over the coordinates of the target.
+For each weighting, we draw 8,192 trajectories of length 32 and split them 80/20 into training and test sets (probe seed 0). For each split, we fit one affine ridge probe shared across its fitting positions, with an unpenalized intercept. R² is computed on the held-out rows, pooled over the scoring positions and target coordinates.
 
 We choose the ridge penalty separately for each target and weighting by **leave-one-position-out cross-validation**, using only the training trajectories. For each candidate penalty, we leave out one fitting position, fit on the others, and measure the weighted mean squared prediction error at the omitted position. We repeat this for every fitting position and choose the penalty with the lowest average error.
 
 For example, for the odd/even split, we fit on all odd lengths except 1 and validate at 1, then leave out 3, and so on. Once we have chosen the penalty, we refit on all odd lengths and test on even lengths in the held-out trajectories.
 
-We try 19 penalties, spaced by half-decades from 1e−8 to 10, expressed as multiples of the mean eigenvalue of the fitting-feature covariance. For every split, we refit the final probe on all fitting rows at the chosen penalty.
+We try 19 penalties, spaced by half-decades from 1e−8 to 10. Each is multiplied by the mean eigenvalue of the weighted feature covariance for that fit. For every split, we refit the final probe on all fitting rows at the chosen penalty.
 
 R² is undefined when the target is constant, such as the next-bit probability after a single observation. These entries are stored as `null` and displayed as `undefined`.
 
@@ -203,6 +205,8 @@ Requirements: Python 3.10+, PyTorch (tested with 2.14), and Numba (tested with 0
 
 ## Reproduce
 
+From the repository root, install the dependencies with `python -m pip install -r requirements.txt`. To train models and run their probes:
+
 ```sh
 ./run_sweep.sh              # large RoPE model, both mixing probabilities, five seeds
 ./run_sweep.sh 2 32         # small RoPE model
@@ -210,11 +214,16 @@ Requirements: Python 3.10+, PyTorch (tested with 2.14), and Numba (tested with 0
 ./run_sweep.sh 2 32 learned # small model with learned absolute position embeddings
 ```
 
-To recreate the tables from the stored checkpoints:
+To print the tables from the saved probe results:
 
 ```sh
-python probe.py runs/*/*/*.pt    # writes runs/<model>/eps<ε>/s<seed>.json
-python summarize.py            # prints Markdown tables for the README
+python summarize.py
+```
+
+To rerun the probes on the stored checkpoints:
+
+```sh
+python probe.py runs/*/*/*.pt    # updates runs/<model>/eps<ε>/s<seed>.json
 ```
 
 To follow a run while it trains, `python probe.py runs/<model>/eps<ε>/s<seed> --checkpoint latest` probes the newest checkpoint. With `--checkpoint all`, existing results are reused when their checkpoint, probe code, and settings match; missing or stale results are recomputed.
