@@ -9,7 +9,9 @@ checks run train.py, probe.py and summarize.py on a tiny model and cover provena
 import copy
 import hashlib
 import itertools
+import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -67,6 +69,15 @@ def reference_joint(T: np.ndarray, x: tuple) -> np.ndarray:
 
 
 class Process(unittest.TestCase):
+    def test_mixing_probability_bounds(self):
+        for eps in (-0.1, 1.1, float("nan"), float("inf"), -float("inf")):
+            with self.subTest(eps=eps), self.assertRaisesRegex(ValueError, "eps"):
+                mrrxor.transition_tensor(eps)
+        for eps in (0.0, 1.0):
+            T = mrrxor.transition_tensor(eps)
+            self.assertTrue((T >= 0).all())
+            torch.testing.assert_close(T.sum((0, 2)), torch.ones(5, dtype=T.dtype))
+
     def test_transition_tensor_matches_hand_written_edges(self):
         for eps in EPSILONS:
             T = mrrxor.transition_tensor(eps)
@@ -158,6 +169,75 @@ class Process(unittest.TestCase):
 
 
 class Training(unittest.TestCase):
+    def test_existing_run_artifacts_are_rejected_before_model_creation(self):
+        import train
+        for artifact in ("directory", "checkpoint", "probe"):
+            with self.subTest(artifact=artifact), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                run = root/"s0"
+                if artifact == "directory":
+                    run.mkdir()
+                    (run/"step_100000.pt").write_bytes(b"old checkpoint")
+                else:
+                    suffix = "pt" if artifact == "checkpoint" else "json"
+                    Path(f"{run}.{suffix}").write_bytes(b"old result")
+                before = {p.relative_to(root): p.read_bytes() if p.is_file() else None for p in root.rglob("*")}
+                stderr = io.StringIO()
+                with patch.object(sys, "argv", ["train.py", "--out", str(run)]), \
+                     patch.object(sys, "stderr", stderr), \
+                     patch.object(train, "untrained", side_effect=AssertionError("Model creation must not start")):
+                    with self.assertRaises(SystemExit) as error:
+                        train.main()
+                self.assertEqual(error.exception.code, 2)
+                self.assertIn("fresh run directory", stderr.getvalue())
+                self.assertEqual(before, {p.relative_to(root): p.read_bytes() if p.is_file() else None
+                                          for p in root.rglob("*")})
+
+    def test_invalid_mixing_probability_does_not_create_output(self):
+        import train
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)/"s0"
+            with patch.object(sys, "argv", ["train.py", "--eps", "-0.1", "--out", str(run)]), \
+                 patch.object(sys, "stderr", io.StringIO()), \
+                 patch.object(train, "untrained", side_effect=AssertionError("Model creation must not start")):
+                with self.assertRaises(SystemExit) as error:
+                    train.main()
+            self.assertEqual(error.exception.code, 2)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_sweep_uses_a_fresh_output_root_and_refuses_to_repeat_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runs = root/"new runs"
+            calls = root/"calls.jsonl"
+            python = root/"fake python"
+            python.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
+from pathlib import Path
+with Path(os.environ["SWEEP_TEST_LOG"]).open("a") as log:
+    log.write(json.dumps(sys.argv[1:])+"\\n")
+if sys.argv[1] == "train.py":
+    run = Path(sys.argv[sys.argv.index("--out")+1])
+    run.mkdir()
+    Path(str(run)+".pt").write_bytes(b"new checkpoint")
+''')
+            python.chmod(0o755)
+            environment = dict(os.environ, PYTHON=str(python), SEEDS="0", RUNS_DIR=str(runs), SWEEP_TEST_LOG=str(calls))
+            command = ["sh", str(ROOT/"run_sweep.sh")]
+            subprocess.run(command, cwd=ROOT, env=environment, check=True, capture_output=True)
+            recorded = [json.loads(line) for line in calls.read_text().splitlines()]
+            training = [args for args in recorded if args[0] == "train.py"]
+            self.assertEqual(len(training), 2)
+            self.assertEqual({Path(args[args.index("--out")+1]) for args in training},
+                             {runs/f"L4_d64_rope/eps{eps}/s0" for eps in ("0", "0.05")})
+            self.assertEqual(recorded[-1], ["summarize.py", str(runs)])
+            probing_call = next(args for args in recorded if args[0] == "probe.py")
+            self.assertEqual(set(probing_call[1:]), {str(p) for p in runs.rglob("*.pt")})
+            before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+            refused = subprocess.run(command, cwd=ROOT, env=environment, capture_output=True, text=True)
+            self.assertEqual(refused.returncode, 2)
+            self.assertIn("fresh RUNS_DIR", refused.stderr)
+            self.assertEqual(before, {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()})
+
     def test_optimal_predictions_match_empirical_next_tokens(self):
         """train.py pairs the logits at position n (which have seen tokens[:, :n]) with optimal_predictions[:, n] and
         the target tokens[:, n]. Check this pairing empirically: group sampled sequences by their first n tokens (none
@@ -330,6 +410,27 @@ class BeliefModel(torch.nn.Module):
 
 
 class Probe(unittest.TestCase):
+    def test_checkpoint_selection_orders_step_numbers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)
+            steps = [1000000, 5000, 1000001, 995000]
+            for step in steps:
+                (run/f"step_{step:06d}.pt").touch()
+            expected = [f"step_{step:06d}" for step in sorted(steps)]
+            self.assertEqual(probe.checkpoint_names(run, "all"), expected)
+            self.assertEqual(probe.checkpoint_names(run, "latest"), expected[-1:])
+            self.assertEqual(probe.checkpoint_names(run, "step_005000"), ["step_005000"])
+
+    def test_test_fraction_bounds(self):
+        T = mrrxor.transition_tensor(0.05)
+        for fraction in (-0.2, 0.0, 1.0, 1.2, float("nan"), float("inf"), -float("inf")):
+            with self.subTest(fraction=fraction):
+                with self.assertRaisesRegex(ValueError, "test_fraction"):
+                    probing.split(100, fraction, seed=0)
+                with patch.object(probing, "trajectories", side_effect=AssertionError("Sampling must not start")):
+                    with self.assertRaisesRegex(ValueError, "test_fraction"):
+                        probing.prepare_data(T, 32, count=100, test_fraction=fraction)
+
     def test_split_is_by_trajectory(self):
         test = probing.split(1000, 0.2, seed=0)
         self.assertEqual(int(test.sum()), 200)
@@ -510,6 +611,12 @@ class Probe(unittest.TestCase):
             self.assertEqual(final["args"]["eps"], 0.05)
             self.assertTrue(np.isfinite(final["test_kl"]))
             self.assertEqual({v.device.type for v in final["model"].values()}, {"cpu"})
+            before = {p: p.read_bytes() for p in Path(tmp).rglob("*") if p.is_file()}
+            repeated = subprocess.run(python + [str(ROOT/"train.py"), "--steps", "1", "--out", str(run)],
+                                      capture_output=True, text=True, cwd=ROOT)
+            self.assertEqual(repeated.returncode, 2)
+            self.assertIn("fresh run directory", repeated.stderr)
+            self.assertEqual(before, {p: p.read_bytes() for p in Path(tmp).rglob("*") if p.is_file()})
             for name, checkpoint in ((f"{run}.pt", "final"), (str(run), "all")):  # a run with or without .pt
                 subprocess.run(python + [str(ROOT / "probe.py"), name, "--trajectories", "256", "--checkpoint",
                                          checkpoint], check=True, capture_output=True, cwd=ROOT)
@@ -642,6 +749,12 @@ class Summary(unittest.TestCase):
         self.assertEqual(completed.stdout, markdown + "\n")
         self.assertIn("undefined", completed.stdout)
         self.assertEqual(before, {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()})
+
+    def test_summary_accepts_an_explicit_runs_root(self):
+        expected = summarize.render_summary(summarize.load_runs(self.paths))
+        completed = subprocess.run([sys.executable, str(ROOT/"summarize.py"), str(self.root/"runs")],
+                                   cwd=ROOT, check=True, capture_output=True, text=True)
+        self.assertEqual(completed.stdout, expected+"\n")
 
     def test_imports_do_not_execute_scripts(self):
         before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}

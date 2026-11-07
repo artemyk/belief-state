@@ -36,7 +36,8 @@ def files(run: Path, name: str) -> tuple[Path, Path]:
 
 
 def checkpoint_names(run: Path, checkpoint: str) -> list[str]:
-    steps = sorted(path.stem for path in run.glob("step_*.pt"))
+    steps = sorted((path.stem for path in run.glob("step_*.pt")),
+                   key=lambda name: int(name.removeprefix("step_")))
     if checkpoint == "latest":
         return steps[-1:]
     if checkpoint == "all":

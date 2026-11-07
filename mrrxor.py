@@ -24,6 +24,8 @@ A, B, C, D, E = range(5)
 
 def transition_tensor(eps: float = 0.05) -> torch.Tensor:
     """T[x, s, t] = P(emit x, next state t | state s), with the random jump applied before emitting."""
+    if not 0 <= eps <= 1:
+        raise ValueError("eps must be in [0, 1]")
     emit = torch.zeros(2, 5, 5, dtype=torch.float64)
     emit[0, A, B] = emit[1, A, C] = 0.5
     emit[0, B, E] = emit[1, B, D] = 0.5

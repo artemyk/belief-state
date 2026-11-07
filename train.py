@@ -6,8 +6,9 @@ divergence from the Bayes-optimal next-token distribution (computed from the exa
 prediction, averaged over all tokens of a fixed held-out set of 4,096 sequences. It is logged every `--log-every`
 steps, and the current weights are saved to <out>/step_<step>.pt every `--ckpt-every` steps, to follow training.
 <out>.pt holds the final weights and the training summary (steps, test KL).
+The output directory, final checkpoint, and probe results must not already exist.
 
-Usage: python train.py --eps 0.05 --seed 0 --out runs/L4_d64_rope/eps0.05/s0
+Usage: python train.py --eps 0.05 --seed 0 --out outputs/reproduction/L4_d64_rope/eps0.05/s0
 """
 import argparse
 import time
@@ -40,12 +41,18 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=100_000, help="number of steps (and of the cosine schedule)")
     parser.add_argument("--log-every", type=int, default=1000)
     parser.add_argument("--ckpt-every", type=int, default=5000)
-    parser.add_argument("--out", type=Path, required=True, help="run name, e.g. runs/L4_d64_rope/eps0.05/s0 (no extension)")
+    parser.add_argument("--out", type=Path, required=True, help="new run directory, e.g. outputs/reproduction/L4_d64_rope/eps0.05/s0 (no extension)")
     args = parser.parse_args()
+    for path in (args.out, Path(f"{args.out}.pt"), Path(f"{args.out}.json")):
+        if path.exists() or path.is_symlink():
+            parser.error(f"Output already exists: {path}; choose a fresh run directory")
+    try:
+        T = mrrxor.transition_tensor(args.eps)
+    except ValueError as error:
+        parser.error(str(error))
 
     device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
     data_rng = torch.Generator().manual_seed(args.seed)
-    T = mrrxor.transition_tensor(args.eps)
 
     cfg = Config(context=args.context, n_layers=args.layers, d_model=args.d_model, d_mlp=4 * args.d_model, rope=args.rope)
     model = untrained(cfg, args.init_std, args.seed).to(device)
@@ -61,7 +68,7 @@ def main() -> None:
                                                    eta_min=args.lr / 100),
     ], milestones=[args.warmup])
 
-    args.out.mkdir(parents=True, exist_ok=True)
+    args.out.mkdir(parents=True, exist_ok=False)
     test_tokens, test_optimal = mrrxor.test_set(T, args.context)
 
     def test_kl() -> float:

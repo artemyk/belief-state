@@ -8,6 +8,7 @@ half to first half); the second has its three controls for the random split (nex
 state, and the belief-state probe on the untrained network). Both weight histories uniformly. Collapsed below them
 are the same two tables with process weighting and the controls for the held-out splits. Entries are means over seeds, with the standard deviation for the
 belief state (joined by no-break spaces, so that it does not wrap). Below the tables: the number of seeds, if not 5."""
+import argparse
 import hashlib
 import json
 from collections import defaultdict
@@ -134,7 +135,10 @@ def render_summary(runs: dict) -> str:
 
 
 def main() -> None:
-    runs = load_runs(sorted(Path("runs").glob("*/*/*.json")))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("runs", nargs="?", type=Path, default=Path("runs"), help="root directory of scored runs")
+    args = parser.parse_args()
+    runs = load_runs(sorted(args.runs.glob("*/*/*.json")))
     print(render_summary(runs))
 
 

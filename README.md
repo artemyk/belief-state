@@ -218,11 +218,16 @@ Requirements: Python 3.10+, PyTorch (tested with 2.14), and Numba (tested with 0
 From the repository root, install the dependencies with `python -m pip install -r requirements.txt`. To train models and run their probes:
 
 ```sh
+export RUNS_DIR=outputs/reproduction
 ./run_sweep.sh              # large RoPE model, both mixing probabilities, five seeds
 ./run_sweep.sh 2 32         # small RoPE model
 ./run_sweep.sh 4 64 learned # large model with learned absolute position embeddings
 ./run_sweep.sh 2 32 learned # small model with learned absolute position embeddings
 ```
+
+Training requires a fresh run directory and refuses to replace an existing final checkpoint or probe result. The sweep requires a new model directory under `RUNS_DIR` (default `runs`), so choose a fresh root to preserve the stored runs. The commands above save the reproduced models under `outputs/reproduction/`.
+
+Mixing probabilities must lie in `[0, 1]`; the probe's `--test-fraction` must be strictly between 0 and 1. Invalid and nonfinite values are rejected.
 
 To print the tables from the saved probe results:
 
@@ -230,13 +235,15 @@ To print the tables from the saved probe results:
 python summarize.py
 ```
 
+For a different output root, use `python summarize.py outputs/reproduction`.
+
 To rerun the probes on the stored checkpoints:
 
 ```sh
 python probe.py runs/*/*/*.pt    # updates runs/<model>/eps<ε>/s<seed>.json
 ```
 
-To follow a run while it trains, `python probe.py runs/<model>/eps<ε>/s<seed> --checkpoint latest` probes the newest checkpoint. With `--checkpoint all`, existing results are reused when their checkpoint, probe code, and settings match; missing or stale results are recomputed.
+To follow a run while it trains, `python probe.py runs/<model>/eps<ε>/s<seed> --checkpoint latest` probes the checkpoint with the highest numeric step. With `--checkpoint all`, existing results are reused when their checkpoint, probe code, and settings match; missing or stale results are recomputed.
 
 ## Tests
 

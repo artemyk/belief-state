@@ -54,6 +54,8 @@ def trajectories(T: torch.Tensor, length: int, weighting: str, count: int,
 
 def split(count: int, test_fraction: float, seed: int) -> torch.Tensor:
     """Boolean mask (count,) of the test trajectories: a random subset of round(test_fraction * count) of them."""
+    if not 0 < test_fraction < 1:
+        raise ValueError("test_fraction must be strictly between 0 and 1")
     test = torch.zeros(count, dtype=torch.bool)
     test[torch.randperm(count, generator=torch.Generator().manual_seed(seed))[: round(test_fraction * count)]] = True
     return test
