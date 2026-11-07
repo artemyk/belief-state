@@ -227,9 +227,35 @@ class Model(unittest.TestCase):
             x = m.embed(torch.cat([bos, tokens[:, :-1]], 1)) + m.pos_embed(torch.arange(16))
             for i, block in enumerate(m.blocks):
                 torch.testing.assert_close(features[..., 32 * i: 32 * (i + 1)], block.ln1(x))
-                x, _ = block(x)
+                x, _, _ = block(x)
             torch.testing.assert_close(features[..., 64:], m.ln_final(x))
             torch.testing.assert_close(m.unembed(features[..., 64:]), logits)
+
+    def test_cached_block_matches_full_execution_and_preserves_cache_gradients(self):
+        """One block implementation serves full sequences and arbitrary written KV caches."""
+        for rope in (False, True):
+            model = untrained(Config(context=16, n_layers=1, d_model=16, d_mlp=32, rope=rope), .1, seed=11).double()
+            block = model.blocks[0]
+            x = torch.randn(2, 9, 16, dtype=torch.float64)
+            full, _, full_cache = block(x)
+            _, _, prefix = block(x[:, :5])
+            actual, _, extended = block(x[:, 5:], cache=prefix)
+            torch.testing.assert_close(actual, full[:, 5:], atol=1e-10, rtol=1e-10)
+            for a, b in zip(extended, full_cache):
+                torch.testing.assert_close(a, b, atol=1e-10, rtol=1e-10)
+            written = tuple(value.detach().requires_grad_(True) for value in prefix)
+            result, _, _ = block(x[:, 5:], cache=written)
+            gradients = torch.autograd.grad(result.square().sum(), written)
+            self.assertTrue(all(gradient.norm() > 0 for gradient in gradients))
+
+    def test_default_bos_visibility_is_recorded_and_masked_bos_is_explicit(self):
+        self.assertTrue(Config().bos_visible)
+        model = untrained(Config(bos_visible=False), .1, seed=0).eval()
+        tokens = torch.tensor([[1, 0, 1, 1]])
+        with torch.no_grad():
+            before = model(tokens)
+            model.embed.weight[model.cfg.vocab].zero_()
+            torch.testing.assert_close(model(tokens)[:, 1:], before[:, 1:], atol=1e-6, rtol=0)
 
     def test_untrained_is_reproducible(self):
         torch.randn(10)  # the global RNG state beforehand does not matter
@@ -472,6 +498,7 @@ class Probe(unittest.TestCase):
                              ["step_000010.pt", "step_000020.pt", "step_000030.pt"])
             final = torch.load(f"{run}.pt", weights_only=True)
             self.assertEqual(final["step"], 30)
+            self.assertIs(final["config"]["bos_visible"], True)
             self.assertEqual(final["args"]["seed"], 0)
             self.assertEqual(final["args"]["eps"], 0.05)
             self.assertTrue(np.isfinite(final["test_kl"]))
@@ -551,6 +578,17 @@ class Summary(unittest.TestCase):
             path = path.with_suffix(".json")
             path.write_text(json.dumps(result))
             self.paths.append(path)
+
+    def test_bos_default_matches_explicit_visible_setting(self):
+        path = self.paths[0]
+        result = json.loads(path.read_text())
+        result["config"].pop("bos_visible")
+        path.write_text(json.dumps(result))
+        self.assertEqual(sum(len(rows) for rows in summarize.load_runs(self.paths).values()), 2)
+        result["config"]["bos_visible"] = False
+        path.write_text(json.dumps(result))
+        with self.assertRaisesRegex(ValueError, "incompatible model or training settings"):
+            summarize.load_runs(self.paths)
 
     def test_rejects_incompatible_results(self):
         path = self.paths[1]

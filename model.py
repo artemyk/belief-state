@@ -20,14 +20,17 @@ class Config:
     d_head: int = 8
     d_mlp: int = 256
     rope: bool = True
+    bos_visible: bool = True
 
 
-def rotary(x: torch.Tensor, base: float = 10_000.0) -> torch.Tensor:
+def rotary(x: torch.Tensor, base: float = 10_000.0, *, positions=None) -> torch.Tensor:
     """Rotary position embedding of queries or keys (batch, heads, length, d_head): the two halves of each vector are
     rotated as pairs of coordinates by angles position * base^(-i / (d_head / 2)), i = 0, ..., d_head / 2 - 1."""
     half = x.shape[-1] // 2
     frequencies = base ** (-torch.arange(half, device=x.device, dtype=torch.float32) / half)
-    angles = torch.arange(x.shape[-2], device=x.device, dtype=torch.float32)[:, None] * frequencies
+    if positions is None:
+        positions = torch.arange(x.shape[-2], device=x.device)
+    angles = torch.as_tensor(positions, device=x.device)[..., None] * frequencies
     cos, sin = angles.cos().to(x.dtype), angles.sin().to(x.dtype)
     x1, x2 = x[..., :half], x[..., half:]
     return torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], -1)
@@ -43,17 +46,28 @@ class Block(nn.Module):
         self.ln2 = nn.LayerNorm(cfg.d_model)
         self.mlp = nn.Sequential(nn.Linear(cfg.d_model, cfg.d_mlp), nn.ReLU(), nn.Linear(cfg.d_mlp, cfg.d_model))
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Returns the updated residual stream and the normalized block input (a probe feature)."""
+    def forward(self, x: torch.Tensor, mask=None, *, positions=None, cache=None):
+        """Full or cached execution, returning residuals, probe inputs and (K, V).
+
+        Cache tensors have shape (batch, heads, positions, d_head). Keys already
+        include RoPE. Cache length determines positions unless supplied explicitly;
+        gradients through written keys and values are preserved.
+        """
         normalized = self.ln1(x)
         batch, length, _ = x.shape
+        past = 0 if cache is None else cache[0].shape[-2]
+        if positions is None:
+            positions = torch.arange(past, past+length, device=x.device)
         q, k, v = self.qkv(normalized).view(batch, length, 3, self.n_heads, self.d_head).permute(2, 0, 3, 1, 4)
         if self.rope:
-            q, k = rotary(q), rotary(k)
-        attention = F.scaled_dot_product_attention(q, k, v, is_causal=True)
-        x = x + self.out(attention.transpose(1, 2).reshape(batch, length, -1))
-        x = x + self.mlp(self.ln2(x))
-        return x, normalized
+            q, k = rotary(q, positions=positions), rotary(k, positions=positions)
+        if cache is not None:
+            k, v = torch.cat([cache[0], k], 2), torch.cat([cache[1], v], 2)
+        if mask is None and past:
+            mask = torch.arange(past+length, device=x.device)[None] <= past+torch.arange(length, device=x.device)[:, None]
+        attention = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, is_causal=mask is None)
+        x = x+self.out(attention.transpose(1, 2).reshape(batch, length, -1))
+        return x+self.mlp(self.ln2(x)), normalized, (k, v)
 
 
 class Transformer(nn.Module):
@@ -81,9 +95,13 @@ class Transformer(nn.Module):
         x = self.embed(inputs)
         if self.pos_embed is not None:
             x = x + self.pos_embed(torch.arange(tokens.shape[1], device=tokens.device))
+        mask = None
+        if not self.cfg.bos_visible:
+            mask = torch.ones(tokens.shape[1], tokens.shape[1], dtype=torch.bool, device=tokens.device).tril()
+            mask[1:, 0] = False
         normalized = []
         for block in self.blocks:
-            x, block_input = block(x)
+            x, block_input, _ = block(x, mask)
             normalized.append(block_input)
         final = self.ln_final(x)
         logits = self.unembed(final)

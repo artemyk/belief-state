@@ -199,6 +199,17 @@ R² is undefined when the target is constant, such as the next-bit probability a
 
 Each run in `runs/L<layers>_d<d_model>[_rope]/eps<ε>/` includes the final checkpoint (`s<seed>.pt`) and its probe results (`s<seed>.json`), including the penalty chosen for each split, target, and weighting. The untrained network is regenerated from its seed. Logs and intermediate checkpoints stay local.
 
+`config.bos_visible` records BOS visibility and defaults to `True`, including
+for the stored standard-BOS checkpoints that omit the field. Historical
+masked-BOS checkpoints must record `bos_visible=False` explicitly.
+
+The transformer is separated into `Config`, rotary encoding, `Block`, and
+`Transformer`. Each block uses the same forward method for ordinary sequences
+and cached continuations. Its optional cache is a pair of key/value tensors
+with shape `(batch, heads, positions, d_head)`; the returned pair includes the
+new positions and preserves gradients through supplied cache entries. The
+usual transformer logits and probe-feature interface is unchanged.
+
 Each results file stores `config`, numeric `training_settings`, `probe_settings`, and the completed training `step`. SHA-256 hashes identify the checkpoint and numerical code used. Summarization verifies checkpoint identities and checks that the runs being compared have consistent settings.
 
 Requirements: Python 3.10+, PyTorch (tested with 2.14), and Numba (tested with 0.68) with NumPy. Training uses Apple's MPS or CUDA when available, with the model compiled by `torch.compile` (on CUDA, replayed as CUDA graphs).
