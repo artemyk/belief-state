@@ -172,6 +172,95 @@ class Process(unittest.TestCase):
 
 
 class Training(unittest.TestCase):
+    def test_invalid_float_settings_are_rejected_before_initialization(self):
+        import train
+        for option in ("--lr", "--init-std"):
+            for value in ("nan", "inf", "-inf", "-0.1"):
+                with self.subTest(option=option, value=value), tempfile.TemporaryDirectory() as directory:
+                    run = Path(directory)/"s0"
+                    stderr = io.StringIO()
+                    with patch.object(sys, "argv", ["train.py", f"{option}={value}", "--out", str(run)]), \
+                         patch.object(sys, "stderr", stderr), \
+                         patch.object(train, "untrained", side_effect=AssertionError("Model creation must not start")):
+                        with self.assertRaises(SystemExit) as error:
+                            train.main()
+                    self.assertEqual(error.exception.code, 2)
+                    self.assertIn(f"{option} must be finite and nonnegative", stderr.getvalue())
+                    self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_zero_learning_rate_and_initialization_scale_remain_valid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)/"s0"
+            subprocess.run([sys.executable, str(ROOT/"train.py"), "--layers", "1", "--d-model", "8",
+                            "--context", "8", "--batch", "2", "--steps", "1", "--warmup", "0",
+                            "--lr", "0", "--init-std", "0", "--out", str(run)],
+                           check=True, cwd=ROOT, capture_output=True)
+            saved = torch.load(Path(f"{run}.pt"), weights_only=True)
+            expected = untrained(Config(**saved["config"]), 0, saved["args"]["seed"])
+            self.assertEqual(saved["step"], 1)
+            self.assertTrue(np.isfinite(saved["test_kl"]))
+            for name, value in expected.state_dict().items():
+                torch.testing.assert_close(saved["model"][name], value, atol=0, rtol=0)
+
+    def test_nonfinite_training_values_prevent_updates_and_checkpoint_writes(self):
+        import train
+        # Load optimizer machinery before mocking hardware queries and loss.
+        torch.optim.Adam([torch.nn.Parameter(torch.zeros(()))])
+        original_model, original_loss = train.untrained, train.F.cross_entropy
+        tokens = torch.zeros(2, 8, dtype=torch.long)
+        optimal = torch.full((2, 8, 2), .5, dtype=torch.float64)
+        for mode in ("loss", "gradient", "state"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                run = Path(directory)/"s0"
+                def model_factory(*args, **kwargs):
+                    model = original_model(*args, **kwargs)
+                    if mode == "gradient":
+                        model.embed.weight.register_hook(lambda g: torch.full_like(g, float("inf")))
+                    elif mode == "state":
+                        # The held-out inputs below do not read token 1, so KL
+                        # alone cannot detect this invalid embedding row.
+                        with torch.no_grad():
+                            model.embed.weight[1].fill_(float("nan"))
+                    return model
+                def loss(logits, targets):
+                    value = original_loss(logits, targets)
+                    return value*float("nan") if mode == "loss" else value
+                def unexpected_update(*args, **kwargs):
+                    self.fail("Bad values reached the optimizer")
+                argv = ["train.py", "--layers", "1", "--d-model", "8", "--context", "8", "--batch", "2",
+                        "--steps", "0" if mode == "state" else "1", "--warmup", "0", "--out", str(run)]
+                expected_error = RuntimeError if mode == "gradient" else FloatingPointError
+                message = {"loss": "Nonfinite training loss", "gradient": "non-finite", "state": "Nonfinite model state"}[mode]
+                with patch.object(sys, "argv", argv), \
+                     patch.object(torch.backends.mps, "is_available", return_value=False), \
+                     patch.object(torch.cuda, "is_available", return_value=False), \
+                     patch.object(train, "untrained", side_effect=model_factory), \
+                     patch.object(train.F, "cross_entropy", side_effect=loss), \
+                     patch.object(train.mrrxor, "sample", return_value=tokens), \
+                     patch.object(train.mrrxor, "test_set", return_value=(tokens, optimal)), \
+                     patch.object(torch.optim.Adam, "step", new=unexpected_update):
+                    with self.assertRaisesRegex(expected_error, message):
+                        train.main()
+                self.assertEqual(list(Path(directory).rglob("*.pt")), [])
+
+    def test_divergent_finite_learning_rate_never_saves_a_checkpoint(self):
+        import train
+        torch.optim.Adam([torch.nn.Parameter(torch.zeros(()))])
+        for interval in (1, 1000):
+            with self.subTest(checkpoint_interval=interval), tempfile.TemporaryDirectory() as directory:
+                run = Path(directory)/"s0"
+                argv = ["train.py", "--layers", "1", "--d-model", "8", "--context", "8", "--batch", "2",
+                        "--steps", "1", "--warmup", "0", "--lr", "1e20", "--log-every", "1000",
+                        "--ckpt-every", str(interval), "--out", str(run)]
+                stdout = io.StringIO()
+                with patch.object(sys, "argv", argv), patch.object(sys, "stdout", stdout), \
+                     patch.object(torch.backends.mps, "is_available", return_value=False), \
+                     patch.object(torch.cuda, "is_available", return_value=False):
+                    with self.assertRaisesRegex(FloatingPointError, "Nonfinite test KL"):
+                        train.main()
+                self.assertEqual(list(Path(directory).rglob("*.pt")), [])
+                self.assertNotIn("trained for", stdout.getvalue())
+
     def test_invalid_counts_are_rejected_before_initialization_or_output_creation(self):
         import train
         cases = [("--steps", "-1"), ("--warmup", "-1"),

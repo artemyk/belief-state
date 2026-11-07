@@ -11,6 +11,7 @@ The output directory, final checkpoint, and probe results must not already exist
 Usage: python train.py --eps 0.05 --seed 0 --out outputs/reproduction/L4_d64_rope/eps0.05/s0
 """
 import argparse
+import math
 import time
 from pathlib import Path
 
@@ -49,6 +50,10 @@ def main() -> None:
     for name in ("steps", "warmup"):
         if getattr(args, name) < 0:
             parser.error(f"--{name} must be nonnegative")
+    for name in ("lr", "init_std"):
+        value = getattr(args, name)
+        if not math.isfinite(value) or value < 0:
+            parser.error(f"--{name.replace('_', '-')} must be finite and nonnegative")
     for path in (args.out, Path(f"{args.out}.pt"), Path(f"{args.out}.json")):
         if path.exists() or path.is_symlink():
             parser.error(f"Output already exists: {path}; choose a fresh run directory")
@@ -79,26 +84,38 @@ def main() -> None:
 
     def test_kl() -> float:
         with torch.no_grad():
-            return mrrxor.kl_to_model(test_optimal, model(test_tokens.to(device)))
-
+            kl = mrrxor.kl_to_model(test_optimal, model(test_tokens.to(device)))
+        if not math.isfinite(kl):
+            raise FloatingPointError("Nonfinite test KL; training stopped")
+        return kl
 
     def save(path: Path, step: int, **summary) -> None:
+        state = {key: value.cpu() for key, value in model.state_dict().items()}
+        if any(not bool(torch.isfinite(value).all()) for value in state.values()):
+            raise FloatingPointError(f"Nonfinite model state at step {step}; checkpoint not saved")
         torch.save({"config": vars(cfg), "args": {k: getattr(args, k) for k in RUN_SETTINGS}, "step": step,
-                    "model": {key: value.cpu() for key, value in model.state_dict().items()}, **summary}, path)
+                    "model": state, **summary}, path)
 
-    # Nothing in the loop reads a value back from the GPU except when logging, so the CPU samples the next batch while the
-    # GPU works on the current one.
+    # Finite checks stop divergent updates. Validate predictions at logging and
+    # checkpoint steps; checkpoint writes also check every model tensor.
     started = time.time()
     for step in range(1, args.steps + 1):
         tokens = mrrxor.sample(T, args.batch, args.context, data_rng).to(device)
         logits = forward(tokens)
         loss = F.cross_entropy(logits.flatten(0, 1), tokens.flatten())
+        if not bool(torch.isfinite(loss)):
+            raise FloatingPointError(f"Nonfinite training loss at step {step}; training stopped")
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        # Check gradients without changing their magnitudes or the optimizer.
+        torch.nn.utils.clip_grad_norm_(model.parameters(), float("inf"),
+                                      norm_type=float("inf"), error_if_nonfinite=True)
         optimizer.step()
         scheduler.step()
+        if step % args.log_every == 0 or step % args.ckpt_every == 0:
+            kl = test_kl()
         if step % args.log_every == 0:
-            print(f"step {step:7d}  lr {scheduler.get_last_lr()[0]:.2e}  test KL {test_kl():.2e}"
+            print(f"step {step:7d}  lr {scheduler.get_last_lr()[0]:.2e}  test KL {kl:.2e}"
                   f"  ({step / (time.time() - started):.0f} steps/s)", flush=True)
         if step % args.ckpt_every == 0:
             save(args.out / f"step_{step:06d}.pt", step)

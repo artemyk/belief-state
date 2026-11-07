@@ -229,6 +229,8 @@ Training requires a fresh run directory and refuses to replace an existing final
 
 Steps and warmup counts must be nonnegative; model dimensions, batch size, and logging/checkpoint intervals must be positive. Counts are checked before model initialization or output creation. Zero steps saves the untrained model. If a sweep fails or receives an interrupt or termination signal, it stops and waits for its remaining training jobs before exiting.
 
+Learning rate and initialization scale must be finite and nonnegative. Training stops on a nonfinite loss or gradient. Test KL must be finite at logging, checkpoint, and final evaluation steps, and every saved model tensor is checked before writing a checkpoint. These checks detect numerical failure without clipping gradients or changing the optimizer.
+
 Mixing probabilities must lie in `[0, 1]`; the probe's `--test-fraction` must be strictly between 0 and 1. Invalid and nonfinite values are rejected.
 
 To print the tables from the saved probe results:
