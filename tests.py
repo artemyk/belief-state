@@ -12,9 +12,12 @@ import itertools
 import io
 import json
 import os
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -169,6 +172,102 @@ class Process(unittest.TestCase):
 
 
 class Training(unittest.TestCase):
+    def test_invalid_counts_are_rejected_before_initialization_or_output_creation(self):
+        import train
+        cases = [("--steps", "-1"), ("--warmup", "-1"),
+                 ("--log-every", "0"), ("--log-every", "-1"),
+                 ("--ckpt-every", "0"), ("--ckpt-every", "-1"),
+                 ("--batch", "0"), ("--context", "0"),
+                 ("--layers", "0"), ("--d-model", "0")]
+        for option, value in cases:
+            with self.subTest(option=option, value=value), tempfile.TemporaryDirectory() as directory:
+                run = Path(directory)/"s0"
+                stderr = io.StringIO()
+                with patch.object(sys, "argv", ["train.py", option, value, "--out", str(run)]), \
+                     patch.object(sys, "stderr", stderr), \
+                     patch.object(train, "untrained", side_effect=AssertionError("Model creation must not start")):
+                    with self.assertRaises(SystemExit) as error:
+                        train.main()
+                self.assertEqual(error.exception.code, 2)
+                self.assertIn(option, stderr.getvalue())
+                self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_zero_steps_and_warmup_save_the_untrained_model(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)/"s0"
+            subprocess.run([sys.executable, str(ROOT/"train.py"), "--layers", "1", "--d-model", "8",
+                            "--context", "8", "--steps", "0", "--warmup", "0", "--out", str(run)],
+                           check=True, cwd=ROOT, capture_output=True)
+            saved = torch.load(Path(f"{run}.pt"), weights_only=True)
+            expected = untrained(Config(**saved["config"]), saved["args"]["init_std"], saved["args"]["seed"])
+            self.assertEqual(saved["step"], 0)
+            self.assertTrue(np.isfinite(saved["test_kl"]))
+            self.assertEqual(list(run.iterdir()), [])
+            for name, value in expected.state_dict().items():
+                torch.testing.assert_close(saved["model"][name], value, atol=0, rtol=0)
+
+    def test_sweep_stops_and_reaps_training_jobs_on_failure_and_signals(self):
+        shells = ["sh"]
+        if bash := shutil.which("bash"):
+            shells.append(bash)
+        for shell in shells:
+            for mode in ("failure", "interrupt", "terminate"):
+                with self.subTest(shell=shell, mode=mode), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    python = root/"fake-python"
+                    python.write_text(f"#!{sys.executable}\n" + '''import os, signal, sys, time
+from pathlib import Path
+root = Path(os.environ["SWEEP_TEST_ROOT"])
+if sys.argv[1] != "train.py":
+    (root/"unexpected-probe-or-summary").touch()
+    sys.exit(1)
+eps = sys.argv[sys.argv.index("--eps")+1]
+if os.environ["SWEEP_TEST_MODE"] == "failure" and eps == "0.05":
+    deadline = time.monotonic()+5
+    while not (root/"ready-0").exists() and time.monotonic() < deadline:
+        time.sleep(.01)
+    sys.exit(7)
+def stopped(signum, frame):
+    (root/("stopped-"+eps)).write_text(str(signum))
+    sys.exit(0)
+signal.signal(signal.SIGTERM, stopped)
+(root/("ready-"+eps)).write_text(str(os.getpid()))
+while True:
+    time.sleep(.1)
+''')
+                    python.chmod(0o755)
+                    env = dict(os.environ, PYTHON=str(python), SEEDS="0", RUNS_DIR=str(root/"runs"),
+                               SWEEP_TEST_ROOT=str(root), SWEEP_TEST_MODE=mode)
+                    process = subprocess.Popen([shell, str(ROOT/"run_sweep.sh")], cwd=ROOT, env=env,
+                                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    try:
+                        if mode != "failure":
+                            deadline = time.monotonic()+5
+                            while len(list(root.glob("ready-*"))) < 2 and time.monotonic() < deadline:
+                                time.sleep(.01)
+                            self.assertEqual(len(list(root.glob("ready-*"))), 2)
+                            process.send_signal(signal.SIGINT if mode == "interrupt" else signal.SIGTERM)
+                        stdout, stderr = process.communicate(timeout=10)
+                        self.assertEqual(process.returncode, {"failure": 7, "interrupt": 130, "terminate": 143}[mode], stderr)
+                        expected = {"0"} if mode == "failure" else {"0", "0.05"}
+                        for eps in expected:
+                            self.assertTrue((root/f"stopped-{eps}").exists(), stderr)
+                            pid = int((root/f"ready-{eps}").read_text())
+                            with self.assertRaises(ProcessLookupError):
+                                os.kill(pid, 0)
+                        self.assertFalse((root/"unexpected-probe-or-summary").exists())
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                            process.communicate()
+                        # A failing regression must not leave its fake trainers running.
+                        for ready in root.glob("ready-*"):
+                            if not (root/ready.name.replace("ready-", "stopped-")).exists():
+                                try:
+                                    os.kill(int(ready.read_text()), signal.SIGTERM)
+                                except ProcessLookupError:
+                                    pass
+
     def test_existing_run_artifacts_are_rejected_before_model_creation(self):
         import train
         for artifact in ("directory", "checkpoint", "probe"):

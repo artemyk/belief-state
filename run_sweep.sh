@@ -20,6 +20,17 @@ if [ -e "$OUT" ] || [ -L "$OUT" ]; then
 fi
 mkdir -p "$(dirname "$OUT")"
 mkdir "$OUT"
+cleanup() {
+  trap '' INT TERM
+  children=$(jobs -p)
+  if [ -n "$children" ]; then
+    kill $children 2>/dev/null || :
+    wait $children 2>/dev/null || :
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 PIDS=""
 for eps in 0.05 0; do
   mkdir -p "$OUT/eps${eps}"

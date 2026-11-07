@@ -227,6 +227,8 @@ export RUNS_DIR=outputs/reproduction
 
 Training requires a fresh run directory and refuses to replace an existing final checkpoint or probe result. The sweep requires a new model directory under `RUNS_DIR` (default `runs`), so choose a fresh root to preserve the stored runs. The commands above save the reproduced models under `outputs/reproduction/`.
 
+Steps and warmup counts must be nonnegative; model dimensions, batch size, and logging/checkpoint intervals must be positive. Counts are checked before model initialization or output creation. Zero steps saves the untrained model. If a sweep fails or receives an interrupt or termination signal, it stops and waits for its remaining training jobs before exiting.
+
 Mixing probabilities must lie in `[0, 1]`; the probe's `--test-fraction` must be strictly between 0 and 1. Invalid and nonfinite values are rejected.
 
 To print the tables from the saved probe results:

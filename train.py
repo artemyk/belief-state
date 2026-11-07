@@ -43,6 +43,12 @@ def main() -> None:
     parser.add_argument("--ckpt-every", type=int, default=5000)
     parser.add_argument("--out", type=Path, required=True, help="new run directory, e.g. outputs/reproduction/L4_d64_rope/eps0.05/s0 (no extension)")
     args = parser.parse_args()
+    for name in ("layers", "d_model", "context", "batch", "log_every", "ckpt_every"):
+        if getattr(args, name) <= 0:
+            parser.error(f"--{name.replace('_', '-')} must be positive")
+    for name in ("steps", "warmup"):
+        if getattr(args, name) < 0:
+            parser.error(f"--{name} must be nonnegative")
     for path in (args.out, Path(f"{args.out}.pt"), Path(f"{args.out}.json")):
         if path.exists() or path.is_symlink():
             parser.error(f"Output already exists: {path}; choose a fresh run directory")
