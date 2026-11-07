@@ -20,7 +20,10 @@ from model import Config, Transformer
 
 def load(path: Path) -> tuple[Transformer, dict]:
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
-    model = Transformer(Config(**checkpoint["config"]))
+    config = dict(checkpoint["config"])
+    if config.pop("bos_visible", True) is not True:
+        raise ValueError("Only standard BOS is supported")
+    model = Transformer(Config(**config))
     model.load_state_dict(checkpoint["model"])
     return model.eval(), checkpoint
 

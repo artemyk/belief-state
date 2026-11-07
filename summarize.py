@@ -35,7 +35,9 @@ def load_runs(paths: list[Path]) -> dict:
         if common_probe is not None and result["probe_settings"] != common_probe:
             raise ValueError(f"{path}: incompatible probe settings.")
         common_probe = result["probe_settings"]
-        config = {"bos_visible": True, **result["config"]}
+        config = dict(result["config"])
+        if config.pop("bos_visible", True) is not True:
+            raise ValueError(f"{path}: only standard BOS is supported.")
         training = result["training_settings"]
         key = config["n_layers"], config["d_model"], config["rope"], training["eps"]
         settings = (config, {k: v for k, v in training.items() if k != "seed"}, result["step"])

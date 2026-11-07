@@ -216,6 +216,22 @@ class Model(unittest.TestCase):
             difference = (logits - model(tokens)).abs().amax(-1)
             self.assertTrue((difference[:, [1, 5]] > 1e-4).all())
 
+    def test_probe_loader_preserves_standard_bos_and_rejects_other_metadata(self):
+        tokens = torch.tensor([[1, 0, 1, 1]])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/"teacher.pt"
+            config = vars(self.model.cfg).copy()
+            for explicit_metadata in (False, True):
+                if explicit_metadata:
+                    config["bos_visible"] = True
+                torch.save({"config": config, "model": self.model.state_dict()}, path)
+                restored, _ = probe.load(path)
+                torch.testing.assert_close(restored(tokens), self.model(tokens))
+            config["bos_visible"] = False
+            torch.save({"config": config, "model": self.model.state_dict()}, path)
+            with self.assertRaisesRegex(ValueError, "standard BOS"):
+                probe.load(path)
+
     def test_features(self):
         """(n_layers + 1) d_model features: the LayerNorm-ed input of each block, then the final LayerNorm output,
         which the unembedding maps to the logits."""
@@ -247,15 +263,6 @@ class Model(unittest.TestCase):
             result, _, _ = block(x[:, 5:], cache=written)
             gradients = torch.autograd.grad(result.square().sum(), written)
             self.assertTrue(all(gradient.norm() > 0 for gradient in gradients))
-
-    def test_default_bos_visibility_is_recorded_and_masked_bos_is_explicit(self):
-        self.assertTrue(Config().bos_visible)
-        model = untrained(Config(bos_visible=False), .1, seed=0).eval()
-        tokens = torch.tensor([[1, 0, 1, 1]])
-        with torch.no_grad():
-            before = model(tokens)
-            model.embed.weight[model.cfg.vocab].zero_()
-            torch.testing.assert_close(model(tokens)[:, 1:], before[:, 1:], atol=1e-6, rtol=0)
 
     def test_untrained_is_reproducible(self):
         torch.randn(10)  # the global RNG state beforehand does not matter
@@ -498,7 +505,7 @@ class Probe(unittest.TestCase):
                              ["step_000010.pt", "step_000020.pt", "step_000030.pt"])
             final = torch.load(f"{run}.pt", weights_only=True)
             self.assertEqual(final["step"], 30)
-            self.assertIs(final["config"]["bos_visible"], True)
+            self.assertEqual(final["config"], vars(Config(n_layers=1, d_model=16, d_mlp=64)))
             self.assertEqual(final["args"]["seed"], 0)
             self.assertEqual(final["args"]["eps"], 0.05)
             self.assertTrue(np.isfinite(final["test_kl"]))
@@ -579,15 +586,15 @@ class Summary(unittest.TestCase):
             path.write_text(json.dumps(result))
             self.paths.append(path)
 
-    def test_bos_default_matches_explicit_visible_setting(self):
+    def test_summary_rejects_nonstandard_bos_metadata(self):
         path = self.paths[0]
         result = json.loads(path.read_text())
-        result["config"].pop("bos_visible")
+        result["config"]["bos_visible"] = True
         path.write_text(json.dumps(result))
         self.assertEqual(sum(len(rows) for rows in summarize.load_runs(self.paths).values()), 2)
         result["config"]["bos_visible"] = False
         path.write_text(json.dumps(result))
-        with self.assertRaisesRegex(ValueError, "incompatible model or training settings"):
+        with self.assertRaisesRegex(ValueError, "standard BOS"):
             summarize.load_runs(self.paths)
 
     def test_rejects_incompatible_results(self):

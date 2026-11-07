@@ -199,9 +199,8 @@ R² is undefined when the target is constant, such as the next-bit probability a
 
 Each run in `runs/L<layers>_d<d_model>[_rope]/eps<ε>/` includes the final checkpoint (`s<seed>.pt`) and its probe results (`s<seed>.json`), including the penalty chosen for each split, target, and weighting. The untrained network is regenerated from its seed. Logs and intermediate checkpoints stay local.
 
-`config.bos_visible` records BOS visibility and defaults to `True`, including
-for the stored standard-BOS checkpoints that omit the field. Historical
-masked-BOS checkpoints must record `bos_visible=False` explicitly.
+The BOS token is always available to subsequent positions under causal
+attention. There is no BOS-visibility configuration or command-line option.
 
 The transformer is separated into `Config`, rotary encoding, `Block`, and
 `Transformer`. Each block uses the same forward method for ordinary sequences
